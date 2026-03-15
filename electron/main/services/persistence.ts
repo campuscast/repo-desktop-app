@@ -23,6 +23,7 @@ const DEFAULT_CONFIG: AppConfig = {
   groupId: null,
   zoneName: null,
   groupName: null,
+  exitShortcutKey: 'Q',
 }
 
 class PersistenceService {

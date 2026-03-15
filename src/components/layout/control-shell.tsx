@@ -1,11 +1,19 @@
+import { useEffect, useState } from 'react'
 import { Monitor, Activity, LayoutGrid, Settings, Power } from 'lucide-react'
 import { useAppStore, type AppScreen } from '@/store/app-store'
 import { DiagnosticsScreen } from '@/features/diagnostics/diagnostics-screen'
 import { DisplaySelection } from '@/features/displays/display-selection'
+import { SettingsScreen } from '@/features/settings/settings-screen'
 import { OfflineBanner } from '@/features/offline/offline-banner'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
+
+const PLATFORM_LABELS: Record<string, string> = {
+  darwin: 'macOS',
+  win32: 'Windows',
+  linux: 'Linux',
+}
 
 const NAV_ITEMS: Array<{
   id: AppScreen
@@ -14,6 +22,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { id: 'diagnostics', label: 'Status', icon: Activity },
   { id: 'displays', label: 'Displays', icon: LayoutGrid },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
 export function ControlShell() {
@@ -21,6 +30,16 @@ export function ControlShell() {
   const setScreen = useAppStore((s) => s.setScreen)
   const config = useAppStore((s) => s.config)
   const connectionStatus = useAppStore((s) => s.connectionStatus)
+  const [appInfo, setAppInfo] = useState({ version: '', platform: '' })
+
+  useEffect(() => {
+    Promise.all([
+      window.electronAPI.getAppVersion(),
+      window.electronAPI.getAppPlatform(),
+    ]).then(([version, platform]) => {
+      setAppInfo({ version, platform: PLATFORM_LABELS[platform] ?? platform })
+    })
+  }, [])
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background">
@@ -82,8 +101,11 @@ export function ControlShell() {
           <Separator className="my-2" />
 
           <div className="px-3 py-1.5">
-            <p className="truncate text-[10px] text-muted-foreground">
-              {config?.deviceId?.slice(0, 18)}...
+            <p className="text-[10px] text-muted-foreground">
+              v{appInfo.version}
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              {appInfo.platform}
             </p>
           </div>
         </nav>
@@ -92,6 +114,7 @@ export function ControlShell() {
         <main className="flex-1 overflow-auto">
           {screen === 'diagnostics' && <DiagnosticsScreen />}
           {screen === 'displays' && <DisplaySelection />}
+          {screen === 'settings' && <SettingsScreen />}
         </main>
       </div>
     </div>

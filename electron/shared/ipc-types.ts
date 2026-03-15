@@ -18,6 +18,7 @@ export interface AppConfig {
   groupId: string | null
   zoneName: string | null
   groupName: string | null
+  exitShortcutKey: string
 }
 
 export type ActivationState = 'unregistered' | 'pending' | 'activated'

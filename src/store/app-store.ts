@@ -12,6 +12,7 @@ export type AppScreen =
   | 'activation'
   | 'diagnostics'
   | 'displays'
+  | 'settings'
 
 interface AppStore {
   // Current screen (state-driven, not route-driven)
