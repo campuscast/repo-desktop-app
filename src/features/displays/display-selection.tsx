@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { useDisplays } from '@/hooks/use-displays'
+import { useLocale } from '@/hooks/use-locale'
 import { cn } from '@/lib/utils'
 
 export function DisplaySelection() {
@@ -19,19 +20,20 @@ export function DisplaySelection() {
     toggleDisplay,
     refreshDisplays,
   } = useDisplays()
+  const { t } = useLocale()
 
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Display Management</h2>
+          <h2 className="text-lg font-semibold">{t('displays.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Select displays for content playback
+            {t('displays.subtitle')}
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={refreshDisplays}>
           <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          Refresh
+          {t('displays.refresh')}
         </Button>
       </div>
 
@@ -40,7 +42,7 @@ export function DisplaySelection() {
           <CardContent className="flex flex-col items-center gap-3 py-12">
             <Monitor className="h-10 w-10 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">
-              No displays detected
+              {t('displays.noDisplays')}
             </p>
           </CardContent>
         </Card>
@@ -80,13 +82,13 @@ export function DisplaySelection() {
                         {display.scaleFactor !== 1 &&
                           ` @ ${display.scaleFactor}x`}
                         {' · '}
-                        Position ({display.x}, {display.y})
+                        {t('displays.position')} ({display.x}, {display.y})
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     {display.isPrimary && (
-                      <Badge variant="secondary">Primary</Badge>
+                      <Badge variant="secondary">{t('displays.primary')}</Badge>
                     )}
                     <Switch
                       checked={isSelected}
@@ -101,9 +103,9 @@ export function DisplaySelection() {
       )}
 
       <p className="text-xs text-muted-foreground">
-        {selectedDisplayIds.length} display
-        {selectedDisplayIds.length !== 1 ? 's' : ''} selected for playback.
-        Each selected display will open a fullscreen playback window.
+        {t('displays.selectedCount', { count: selectedDisplayIds.length })}
+        {' '}
+        {t('displays.selectedHint')}
       </p>
     </div>
   )

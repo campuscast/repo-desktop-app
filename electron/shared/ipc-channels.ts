@@ -26,6 +26,8 @@ export const IPC = {
   BACKEND_FETCH_MANIFEST: 'backend:fetch-manifest',
   BACKEND_DOWNLOAD_CONTENT: 'backend:download-content',
   BACKEND_SEND_TELEMETRY: 'backend:send-telemetry',
+  BACKEND_REVALIDATE_DEVICE: 'backend:revalidate-device',
+  BACKEND_FETCH_DEVICE_INFO: 'backend:fetch-device-info',
 
   // Connection / MQTT
   CONNECTION_STATUS: 'connection:status',
@@ -47,6 +49,7 @@ export const IPC = {
   // Settings
   SETTINGS_GET_SHORTCUT: 'settings:get-shortcut',
   SETTINGS_SET_SHORTCUT: 'settings:set-shortcut',
+  SETTINGS_VALIDATE_SHORTCUT: 'settings:validate-shortcut',
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

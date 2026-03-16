@@ -23,7 +23,12 @@ const DEFAULT_CONFIG: AppConfig = {
   groupId: null,
   zoneName: null,
   groupName: null,
+  pendingActivationCode: null,
+  pendingActivationRequestedAt: null,
   exitShortcutKey: 'Q',
+  exitShortcutAccelerator: 'Ctrl+Alt+Shift+Q',
+  locale: 'en',
+  theme: 'dark',
 }
 
 class PersistenceService {
@@ -36,7 +41,8 @@ class PersistenceService {
     if (!existsSync(this.dataDir)) {
       mkdirSync(this.dataDir, { recursive: true })
     }
-    this.config = this.loadJson('config.json', DEFAULT_CONFIG)
+    // Merge defaults with loaded config so new fields are always present
+    this.config = { ...DEFAULT_CONFIG, ...this.loadJson('config.json', DEFAULT_CONFIG) }
     this.lastManifest = this.loadJson<ReleaseManifest | null>(
       'last-manifest.json',
       null

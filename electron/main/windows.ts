@@ -1,6 +1,7 @@
 import { app, BrowserWindow, screen, shell, powerSaveBlocker } from 'electron'
 import { join } from 'path'
 import type { DisplayInfo } from '../shared/ipc-types'
+import { registerExitShortcut, unregisterExitShortcut } from './shortcut-manager'
 
 const isDev = process.env.NODE_ENV !== 'production'
 
@@ -126,10 +127,7 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
 
   // Register exit shortcut when first playback window opens
   if (playbackWindows.size === 1) {
-    try {
-      const { registerExitShortcut } = require('./shortcut-manager')
-      registerExitShortcut()
-    } catch { /* shortcut-manager may not be loaded yet */ }
+    registerExitShortcut()
   }
 
   win.on('closed', () => {
@@ -153,10 +151,7 @@ export function closePlaybackWindow(displayId: string): void {
     powerSaveBlockerId = null
 
     // Unregister exit shortcut
-    try {
-      const { unregisterExitShortcut } = require('./shortcut-manager')
-      unregisterExitShortcut()
-    } catch { /* shortcut-manager may not be loaded yet */ }
+    unregisterExitShortcut()
   }
 }
 

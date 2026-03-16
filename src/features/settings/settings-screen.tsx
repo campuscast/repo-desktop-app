@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Save } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { Save, Pencil, X, Globe, Sun, Moon, Monitor } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -7,13 +7,112 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { useAppStore } from '@/store/app-store'
+import { useLocale } from '@/hooks/use-locale'
+import { useTheme } from '@/hooks/use-theme'
+import type { Locale, Theme } from '../../../electron/shared/ipc-types'
 
-const SHORTCUT_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('')
+// ─── Shortcut Recorder helpers ─────────────────────────────────────────────
+
+/** Map browser KeyboardEvent keys → Electron accelerator modifier names */
+function eventToAccelerator(e: KeyboardEvent): string | null {
+  const modifiers: string[] = []
+  if (e.ctrlKey || e.metaKey) modifiers.push('CmdOrCtrl')
+  if (e.altKey) modifiers.push('Alt')
+  if (e.shiftKey) modifiers.push('Shift')
+
+  // Ignore if only modifier keys pressed
+  const MODIFIER_CODES = new Set([
+    'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight',
+    'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
+    'CapsLock', 'NumLock', 'ScrollLock',
+  ])
+  if (MODIFIER_CODES.has(e.code)) return null
+
+  if (modifiers.length === 0) return null // Must have at least one modifier
+
+  // Map common key names
+  let key = ''
+  if (e.code.startsWith('Key')) {
+    key = e.code.slice(3) // KeyA → A
+  } else if (e.code.startsWith('Digit')) {
+    key = e.code.slice(5) // Digit1 → 1
+  } else if (e.code.startsWith('Numpad')) {
+    key = `num${e.code.slice(6)}` // Numpad1 → num1
+  } else if (e.code === 'Space') {
+    key = 'Space'
+  } else if (e.code === 'Escape') {
+    return 'CANCEL'
+  } else {
+    // Use standard key names: F1-F24, Tab, Enter, Backspace, Delete, etc.
+    const STANDARD_KEYS: Record<string, string> = {
+      Tab: 'Tab', Enter: 'Return', Backspace: 'Backspace',
+      Delete: 'Delete', Insert: 'Insert', Home: 'Home', End: 'End',
+      PageUp: 'PageUp', PageDown: 'PageDown',
+      ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+      F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
+      F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+      F13: 'F13', F14: 'F14', F15: 'F15', F16: 'F16', F17: 'F17', F18: 'F18',
+      F19: 'F19', F20: 'F20', F21: 'F21', F22: 'F22', F23: 'F23', F24: 'F24',
+      Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+      Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',',
+      Period: '.', Slash: '/', Backquote: '`',
+    }
+    key = STANDARD_KEYS[e.code] ?? STANDARD_KEYS[e.key] ?? ''
+  }
+
+  if (!key) return null
+
+  return [...modifiers, key].join('+')
+}
+
+/** Convert Electron accelerator string to human-readable display */
+function formatAccelerator(accelerator: string): string {
+  const isMac = navigator.userAgent.includes('Mac')
+  return accelerator
+    .replace(/CmdOrCtrl/g, isMac ? '⌘' : 'Ctrl')
+    .replace(/CommandOrControl/g, isMac ? '⌘' : 'Ctrl')
+    .replace(/Command/g, '⌘')
+    .replace(/Ctrl/g, isMac ? '⌃' : 'Ctrl')
+    .replace(/Control/g, isMac ? '⌃' : 'Ctrl')
+    .replace(/Alt/g, isMac ? '⌥' : 'Alt')
+    .replace(/Option/g, '⌥')
+    .replace(/Shift/g, isMac ? '⇧' : 'Shift')
+    .replace(/\+/g, ' + ')
+}
+
+// ─── Language selector ──────────────────────────────────────────────────────
+
+const LOCALES: Array<{ value: Locale; label: string }> = [
+  { value: 'en', label: 'English' },
+  { value: 'ru', label: 'Русский' },
+]
+
+// ─── Theme options ──────────────────────────────────────────────────────────
+
+const THEME_OPTIONS: Array<{ value: Theme; icon: React.ElementType; labelKey: string }> = [
+  { value: 'light', icon: Sun, labelKey: 'settings.themeLight' },
+  { value: 'dark', icon: Moon, labelKey: 'settings.themeDark' },
+  { value: 'system', icon: Monitor, labelKey: 'settings.themeSystem' },
+]
+
+// ─── Component ──────────────────────────────────────────────────────────────
 
 export function SettingsScreen() {
   const config = useAppStore((s) => s.config)
-  const [exitKey, setExitKey] = useState(config?.exitShortcutKey ?? 'Q')
+  const { t, locale, changeLocale } = useLocale()
+  const { theme, changeTheme } = useTheme()
+
+  // Shortcut state
+  const currentAccelerator = config?.exitShortcutAccelerator || `Ctrl+Alt+Shift+${config?.exitShortcutKey ?? 'Q'}`
+  const [recording, setRecording] = useState(false)
+  const [pendingAccelerator, setPendingAccelerator] = useState<string | null>(null)
+  const [recordingDisplay, setRecordingDisplay] = useState('')
+  const [shortcutError, setShortcutError] = useState<string | null>(null)
+  const recorderRef = useRef<HTMLDivElement>(null)
+
+  // URL state
   const [apiBaseUrl, setApiBaseUrl] = useState(config?.apiBaseUrl ?? '')
   const [mqttBrokerUrl, setMqttBrokerUrl] = useState(config?.mqttBrokerUrl ?? '')
   const [saving, setSaving] = useState(false)
@@ -21,25 +120,85 @@ export function SettingsScreen() {
 
   useEffect(() => {
     if (config) {
-      setExitKey(config.exitShortcutKey)
       setApiBaseUrl(config.apiBaseUrl)
       setMqttBrokerUrl(config.mqttBrokerUrl)
     }
   }, [config])
 
+  // ─── Shortcut recording ────────────────────────────────────────────
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const accelerator = eventToAccelerator(e)
+    if (!accelerator) return
+
+    if (accelerator === 'CANCEL') {
+      setRecording(false)
+      setPendingAccelerator(null)
+      setRecordingDisplay('')
+      setShortcutError(null)
+      return
+    }
+
+    setRecordingDisplay(formatAccelerator(accelerator))
+    setPendingAccelerator(accelerator)
+    setShortcutError(null)
+
+    // Validate on main process
+    window.electronAPI.validateShortcut(accelerator).then((result) => {
+      if (!result.valid) {
+        setShortcutError(result.reason ?? 'Invalid shortcut')
+        setPendingAccelerator(null)
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    if (recording) {
+      window.addEventListener('keydown', handleKeyDown, true)
+      return () => window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [recording, handleKeyDown])
+
+  function startRecording() {
+    setRecording(true)
+    setPendingAccelerator(null)
+    setRecordingDisplay('')
+    setShortcutError(null)
+  }
+
+  async function confirmShortcut() {
+    if (!pendingAccelerator) return
+    try {
+      const updated = await window.electronAPI.setExitShortcut(pendingAccelerator)
+      useAppStore.getState().setConfig(updated)
+    } catch {
+      setShortcutError('Failed to save shortcut')
+    }
+    setRecording(false)
+    setPendingAccelerator(null)
+    setRecordingDisplay('')
+  }
+
+  function cancelRecording() {
+    setRecording(false)
+    setPendingAccelerator(null)
+    setRecordingDisplay('')
+    setShortcutError(null)
+  }
+
+  // ─── Settings save ─────────────────────────────────────────────────
+
   async function handleSave() {
     setSaving(true)
     setSaved(false)
     try {
-      // Save shortcut key
-      const updatedConfig = await window.electronAPI.setExitShortcut(exitKey)
-
-      // Save URLs
       const finalConfig = await window.electronAPI.saveConfig({
         apiBaseUrl: apiBaseUrl.trim(),
         mqttBrokerUrl: mqttBrokerUrl.trim(),
       })
-
       useAppStore.getState().setConfig(finalConfig)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -50,8 +209,7 @@ export function SettingsScreen() {
     }
   }
 
-  const hasChanges =
-    exitKey !== (config?.exitShortcutKey ?? 'Q') ||
+  const hasUrlChanges =
     apiBaseUrl.trim() !== (config?.apiBaseUrl ?? '') ||
     mqttBrokerUrl.trim() !== (config?.mqttBrokerUrl ?? '')
 
@@ -60,29 +218,123 @@ export function SettingsScreen() {
       {/* Exit Shortcut */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Exit Playback Shortcut</CardTitle>
+          <CardTitle className="text-base">{t('settings.exitShortcut')}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              Press this keyboard combination to exit fullscreen playback mode.
+              {t('settings.exitShortcutDesc')}
             </p>
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-muted px-2 py-1 font-mono text-xs">
-                Ctrl + Alt + Shift +
-              </span>
-              <select
-                value={exitKey}
-                onChange={(e) => setExitKey(e.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+
+            {!recording ? (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  {formatAccelerator(currentAccelerator).split(' + ').map((part, i) => (
+                    <span key={i} className="flex items-center gap-1.5">
+                      {i > 0 && <span className="text-xs text-muted-foreground">+</span>}
+                      <Badge variant="secondary" className="font-mono text-xs px-2 py-0.5">
+                        {part}
+                      </Badge>
+                    </span>
+                  ))}
+                </div>
+                <Button variant="outline" size="sm" onClick={startRecording}>
+                  <Pencil className="mr-1.5 h-3 w-3" />
+                  {t('settings.edit')}
+                </Button>
+              </div>
+            ) : (
+              <div ref={recorderRef} className="space-y-2">
+                <div className="flex h-12 items-center justify-center rounded-lg border-2 border-dashed border-primary/50 bg-primary/5 px-4">
+                  {recordingDisplay ? (
+                    <span className="font-mono text-sm font-medium text-primary">
+                      {recordingDisplay}
+                    </span>
+                  ) : (
+                    <span className="text-sm text-muted-foreground animate-pulse">
+                      {t('settings.pressKeys')}
+                    </span>
+                  )}
+                </div>
+                {shortcutError && (
+                  <p className="text-xs text-destructive">{shortcutError}</p>
+                )}
+                <p className="text-[10px] text-muted-foreground">
+                  {t('settings.pressEscCancel')}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={confirmShortcut}
+                    disabled={!pendingAccelerator}
+                  >
+                    {t('settings.save')}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={cancelRecording}>
+                    <X className="mr-1 h-3 w-3" />
+                    {t('settings.cancel')}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Language */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Globe className="h-4 w-4" />
+            {t('settings.language')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-3">
+            {t('settings.languageDesc')}
+          </p>
+          <div className="flex gap-2">
+            {LOCALES.map((loc) => (
+              <Button
+                key={loc.value}
+                variant={locale === loc.value ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => changeLocale(loc.value)}
               >
-                {SHORTCUT_KEYS.map((key) => (
-                  <option key={key} value={key}>
-                    {key}
-                  </option>
-                ))}
-              </select>
-            </div>
+                {loc.label}
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Theme */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sun className="h-4 w-4" />
+            {t('settings.theme')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-3">
+            {t('settings.themeDesc')}
+          </p>
+          <div className="flex gap-2">
+            {THEME_OPTIONS.map((opt) => {
+              const Icon = opt.icon
+              return (
+                <Button
+                  key={opt.value}
+                  variant={theme === opt.value ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => changeTheme(opt.value)}
+                >
+                  <Icon className="mr-1.5 h-3.5 w-3.5" />
+                  {t(opt.labelKey)}
+                </Button>
+              )
+            })}
           </div>
         </CardContent>
       </Card>
@@ -90,7 +342,7 @@ export function SettingsScreen() {
       {/* Connection Settings */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Connection</CardTitle>
+          <CardTitle className="text-base">{t('settings.connection')}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
@@ -99,7 +351,7 @@ export function SettingsScreen() {
                 htmlFor="settings-api-url"
                 className="text-xs font-medium text-muted-foreground"
               >
-                API Base URL
+                {t('settings.apiBaseUrl')}
               </label>
               <input
                 id="settings-api-url"
@@ -114,7 +366,7 @@ export function SettingsScreen() {
                 htmlFor="settings-mqtt-url"
                 className="text-xs font-medium text-muted-foreground"
               >
-                MQTT Broker URL
+                {t('settings.mqttBrokerUrl')}
               </label>
               <input
                 id="settings-mqtt-url"
@@ -133,10 +385,10 @@ export function SettingsScreen() {
         <Button
           onClick={handleSave}
           size="sm"
-          disabled={saving || !hasChanges}
+          disabled={saving || !hasUrlChanges}
         >
           <Save className="mr-1.5 h-3.5 w-3.5" />
-          {saving ? 'Saving...' : saved ? 'Saved!' : 'Save Settings'}
+          {saving ? t('settings.saving') : saved ? t('settings.saved') : t('settings.saveSettings')}
         </Button>
       </div>
     </div>

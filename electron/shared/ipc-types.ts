@@ -2,6 +2,9 @@
 
 // ─── Domain models used across IPC ──────────────────────────────────────────
 
+export type Locale = 'en' | 'ru'
+export type Theme = 'light' | 'dark' | 'system'
+
 export interface AppConfig {
   deviceId: string | null
   deviceName: string | null
@@ -18,7 +21,13 @@ export interface AppConfig {
   groupId: string | null
   zoneName: string | null
   groupName: string | null
+  pendingActivationCode: string | null
+  pendingActivationRequestedAt: string | null
   exitShortcutKey: string
+  /** Full Electron accelerator string, e.g. "Ctrl+Alt+Shift+Q" */
+  exitShortcutAccelerator: string
+  locale: Locale
+  theme: Theme
 }
 
 export type ActivationState = 'unregistered' | 'pending' | 'activated'
@@ -31,6 +40,15 @@ export interface DeviceCredentials {
   token_expires_at?: string
   zone_name?: string
   group_name?: string
+}
+
+export interface DeviceInfo {
+  device_id: string
+  device_name: string
+  zone_id: string
+  group_id: string
+  zone_name: string
+  group_name: string
 }
 
 export interface DisplayInfo {
@@ -136,6 +154,17 @@ export interface MqttConfig {
   clientId: string
   topicPrefix: string
   deviceToken: string
+}
+
+export type DevicePresenceStatus =
+  | 'exists'
+  | 'missing'
+  | 'unknown'
+  | 'unregistered'
+
+export interface DeviceRevalidateResponse {
+  status: DevicePresenceStatus
+  config: AppConfig
 }
 
 export type WindowMode = 'control' | 'playback'

@@ -3,8 +3,14 @@ import { useAppStore } from '@/store/app-store'
 
 export function OfflineBanner() {
   const connectionStatus = useAppStore((s) => s.connectionStatus)
+  const effectiveConnection =
+    connectionStatus.backend === 'connected' || connectionStatus.mqtt === 'connected'
+      ? 'connected'
+      : connectionStatus.backend === 'connecting' || connectionStatus.mqtt === 'connecting'
+        ? 'connecting'
+        : 'disconnected'
 
-  if (connectionStatus.mqtt !== 'disconnected') return null
+  if (effectiveConnection !== 'disconnected') return null
 
   return (
     <div className="flex h-8 shrink-0 items-center justify-center gap-2 bg-destructive/10 text-xs text-destructive">

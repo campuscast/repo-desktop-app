@@ -7,6 +7,7 @@ import { SettingsScreen } from '@/features/settings/settings-screen'
 import { OfflineBanner } from '@/features/offline/offline-banner'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
+import { useLocale } from '@/hooks/use-locale'
 import { cn } from '@/lib/utils'
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -15,22 +16,23 @@ const PLATFORM_LABELS: Record<string, string> = {
   linux: 'Linux',
 }
 
-const NAV_ITEMS: Array<{
-  id: AppScreen
-  label: string
-  icon: React.ElementType
-}> = [
-  { id: 'diagnostics', label: 'Status', icon: Activity },
-  { id: 'displays', label: 'Displays', icon: LayoutGrid },
-  { id: 'settings', label: 'Settings', icon: Settings },
-]
-
 export function ControlShell() {
   const screen = useAppStore((s) => s.screen)
   const setScreen = useAppStore((s) => s.setScreen)
   const config = useAppStore((s) => s.config)
   const connectionStatus = useAppStore((s) => s.connectionStatus)
   const [appInfo, setAppInfo] = useState({ version: '', platform: '' })
+  const { t } = useLocale()
+
+  const NAV_ITEMS: Array<{
+    id: AppScreen
+    label: string
+    icon: React.ElementType
+  }> = [
+    { id: 'diagnostics', label: t('shell.status'), icon: Activity },
+    { id: 'displays', label: t('shell.displays'), icon: LayoutGrid },
+    { id: 'settings', label: t('shell.settings'), icon: Settings },
+  ]
 
   useEffect(() => {
     Promise.all([
@@ -40,6 +42,13 @@ export function ControlShell() {
       setAppInfo({ version, platform: PLATFORM_LABELS[platform] ?? platform })
     })
   }, [])
+
+  const effectiveConnection =
+    connectionStatus.backend === 'connected' || connectionStatus.mqtt === 'connected'
+      ? 'connected'
+      : connectionStatus.backend === 'connecting' || connectionStatus.mqtt === 'connecting'
+        ? 'connecting'
+        : 'disconnected'
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background">
@@ -60,15 +69,15 @@ export function ControlShell() {
           <div
             className={cn(
               'h-2 w-2 rounded-full',
-              connectionStatus.mqtt === 'connected'
+              effectiveConnection === 'connected'
                 ? 'bg-success'
-                : connectionStatus.mqtt === 'connecting'
+                : effectiveConnection === 'connecting'
                   ? 'bg-warning animate-pulse'
                   : 'bg-destructive'
             )}
           />
           <span className="text-xs text-muted-foreground">
-            {connectionStatus.mqtt}
+            {t(`connection.${effectiveConnection}`)}
           </span>
         </div>
       </header>

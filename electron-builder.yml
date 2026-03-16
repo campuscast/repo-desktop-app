@@ -16,6 +16,7 @@ win:
       arch:
         - x64
 linux:
+  icon: build/icons
   target:
     - target: AppImage
       arch:
@@ -23,6 +24,7 @@ linux:
         - arm64
   category: Utility
 mac:
+  icon: build/icon.png
   target:
     - target: zip
       arch:

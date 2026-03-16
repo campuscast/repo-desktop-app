@@ -21,6 +21,17 @@ class MqttService {
     return { ...this.status }
   }
 
+  setBackendStatus(
+    status: ConnectionStatus['backend'],
+    lastError?: string | null
+  ): void {
+    const partial: Partial<ConnectionStatus> = { backend: status }
+    if (lastError !== undefined) {
+      partial.lastError = lastError
+    }
+    this.updateStatus(partial)
+  }
+
   async connect(config: MqttConfig): Promise<void> {
     this.disconnect()
     this.config = config

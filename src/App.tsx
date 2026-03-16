@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Toaster } from 'sonner'
 import { useAppStore } from './store/app-store'
 import { useIpcEvents } from './hooks/use-ipc'
+import { initLocale } from './hooks/use-locale'
+import { initTheme } from './hooks/use-theme'
 import { BootScreen } from './features/boot/boot-screen'
 import { SetupScreen } from './features/setup/setup-screen'
 import { ActivationScreen } from './features/activation/activation-screen'
@@ -47,6 +49,10 @@ function ControlApp() {
         const config = await window.electronAPI.getConfig()
         setConfig(config)
 
+        // Initialize locale and theme from persisted config
+        initLocale(config.locale ?? 'en')
+        initTheme(config.theme ?? 'dark')
+
         const displays = await window.electronAPI.getDisplays()
         setDisplays(displays)
 
@@ -74,18 +80,27 @@ function ControlApp() {
   return (
     <>
       {screen === 'boot' && <BootScreen />}
-      {screen === 'setup' && <SetupScreen />}
-      {screen === 'activation' && <ActivationScreen />}
-      {(screen === 'diagnostics' || screen === 'displays') && <ControlShell />}
+      {screen === 'setup' && (
+        <div key="setup" className="animate-screen-enter">
+          <SetupScreen />
+        </div>
+      )}
+      {screen === 'activation' && (
+        <div key="activation" className="animate-screen-enter">
+          <ActivationScreen />
+        </div>
+      )}
+      {(screen === 'diagnostics' ||
+        screen === 'displays' ||
+        screen === 'settings') && (
+        <div key="control" className="animate-screen-enter">
+          <ControlShell />
+        </div>
+      )}
       <Toaster
         position="bottom-right"
-        theme="dark"
         toastOptions={{
-          style: {
-            background: 'oklch(0.17 0.005 285)',
-            border: '1px solid oklch(0.25 0.01 285)',
-            color: 'oklch(0.93 0.005 285)',
-          },
+          className: 'bg-card text-card-foreground border-border',
         }}
       />
     </>

@@ -4,6 +4,7 @@ import type {
   AppConfig,
   ActivationCodeResponse,
   DeviceCredentials,
+  DeviceInfo,
   DisplayInfo,
   ConnectionStatus,
   ReleaseNotification,
@@ -13,6 +14,7 @@ import type {
   MqttConfig,
   PlaybackState,
   WindowMode,
+  DeviceRevalidateResponse,
 } from '../shared/ipc-types'
 
 export interface ElectronAPI {
@@ -41,6 +43,8 @@ export interface ElectronAPI {
   fetchManifest(releaseId: string): Promise<ReleaseManifest>
   downloadContent(url: string, assetId: string): Promise<string>
   sendTelemetry(payload: TelemetryPayload): Promise<void>
+  revalidateDevice(): Promise<DeviceRevalidateResponse>
+  fetchDeviceInfo(): Promise<DeviceInfo | null>
 
   // Connection
   getConnectionStatus(): Promise<ConnectionStatus>
@@ -58,7 +62,8 @@ export interface ElectronAPI {
 
   // Settings
   getExitShortcut(): Promise<string>
-  setExitShortcut(key: string): Promise<AppConfig>
+  setExitShortcut(accelerator: string): Promise<AppConfig>
+  validateShortcut(accelerator: string): Promise<{ valid: boolean; reason?: string; available?: boolean }>
 
   // Events (main → renderer)
   onDisplaysChanged(cb: (displays: DisplayInfo[]) => void): () => void
@@ -98,6 +103,8 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC.BACKEND_DOWNLOAD_CONTENT, url, assetId),
   sendTelemetry: (payload) =>
     ipcRenderer.invoke(IPC.BACKEND_SEND_TELEMETRY, payload),
+  revalidateDevice: () => ipcRenderer.invoke(IPC.BACKEND_REVALIDATE_DEVICE),
+  fetchDeviceInfo: () => ipcRenderer.invoke(IPC.BACKEND_FETCH_DEVICE_INFO),
 
   // Connection
   getConnectionStatus: () => ipcRenderer.invoke(IPC.CONNECTION_STATUS),
@@ -115,7 +122,8 @@ const api: ElectronAPI = {
 
   // Settings
   getExitShortcut: () => ipcRenderer.invoke(IPC.SETTINGS_GET_SHORTCUT),
-  setExitShortcut: (key) => ipcRenderer.invoke(IPC.SETTINGS_SET_SHORTCUT, key),
+  setExitShortcut: (accelerator) => ipcRenderer.invoke(IPC.SETTINGS_SET_SHORTCUT, accelerator),
+  validateShortcut: (accelerator) => ipcRenderer.invoke(IPC.SETTINGS_VALIDATE_SHORTCUT, accelerator),
 
   // Events — return cleanup function
   onDisplaysChanged: (cb) => {

@@ -22,6 +22,8 @@
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
-    "src/**/*.d.ts"
+    "src/**/*.d.ts",
+    "electron/shared/**/*.ts",
+    "electron/preload/**/*.ts"
   ]
 }
