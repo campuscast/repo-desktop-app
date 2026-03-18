@@ -15,6 +15,8 @@ import type {
   PlaybackState,
   WindowMode,
   DeviceRevalidateResponse,
+  PlayerHealthSnapshot,
+  AutoLaunchSettings,
 } from '../shared/ipc-types'
 
 export interface ElectronAPI {
@@ -41,10 +43,12 @@ export interface ElectronAPI {
   // Backend
   fetchRelease(): Promise<Release | null>
   fetchManifest(releaseId: string): Promise<ReleaseManifest>
-  downloadContent(url: string, assetId: string): Promise<string>
+  downloadContent(url: string, assetId: string, contentType?: string): Promise<string>
+  getCachedContentPath(assetId: string, contentType: string, url?: string): Promise<string | null>
   sendTelemetry(payload: TelemetryPayload): Promise<void>
   revalidateDevice(): Promise<DeviceRevalidateResponse>
   fetchDeviceInfo(): Promise<DeviceInfo | null>
+  getHealthStatus(): Promise<PlayerHealthSnapshot>
 
   // Connection
   getConnectionStatus(): Promise<ConnectionStatus>
@@ -64,6 +68,8 @@ export interface ElectronAPI {
   getExitShortcut(): Promise<string>
   setExitShortcut(accelerator: string): Promise<AppConfig>
   validateShortcut(accelerator: string): Promise<{ valid: boolean; reason?: string; available?: boolean }>
+  getAutoLaunchSettings(): Promise<AutoLaunchSettings>
+  setAutoLaunchEnabled(enabled: boolean): Promise<AutoLaunchSettings>
 
   // Events (main → renderer)
   onDisplaysChanged(cb: (displays: DisplayInfo[]) => void): () => void
@@ -99,12 +105,15 @@ const api: ElectronAPI = {
   fetchRelease: () => ipcRenderer.invoke(IPC.BACKEND_FETCH_RELEASE),
   fetchManifest: (releaseId) =>
     ipcRenderer.invoke(IPC.BACKEND_FETCH_MANIFEST, releaseId),
-  downloadContent: (url, assetId) =>
-    ipcRenderer.invoke(IPC.BACKEND_DOWNLOAD_CONTENT, url, assetId),
+  downloadContent: (url, assetId, contentType) =>
+    ipcRenderer.invoke(IPC.BACKEND_DOWNLOAD_CONTENT, url, assetId, contentType),
+  getCachedContentPath: (assetId, contentType, url) =>
+    ipcRenderer.invoke(IPC.BACKEND_GET_CACHED_CONTENT, assetId, contentType, url),
   sendTelemetry: (payload) =>
     ipcRenderer.invoke(IPC.BACKEND_SEND_TELEMETRY, payload),
   revalidateDevice: () => ipcRenderer.invoke(IPC.BACKEND_REVALIDATE_DEVICE),
   fetchDeviceInfo: () => ipcRenderer.invoke(IPC.BACKEND_FETCH_DEVICE_INFO),
+  getHealthStatus: () => ipcRenderer.invoke(IPC.HEALTH_GET_STATUS),
 
   // Connection
   getConnectionStatus: () => ipcRenderer.invoke(IPC.CONNECTION_STATUS),
@@ -124,6 +133,8 @@ const api: ElectronAPI = {
   getExitShortcut: () => ipcRenderer.invoke(IPC.SETTINGS_GET_SHORTCUT),
   setExitShortcut: (accelerator) => ipcRenderer.invoke(IPC.SETTINGS_SET_SHORTCUT, accelerator),
   validateShortcut: (accelerator) => ipcRenderer.invoke(IPC.SETTINGS_VALIDATE_SHORTCUT, accelerator),
+  getAutoLaunchSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET_AUTOLAUNCH),
+  setAutoLaunchEnabled: (enabled) => ipcRenderer.invoke(IPC.SETTINGS_SET_AUTOLAUNCH, enabled),
 
   // Events — return cleanup function
   onDisplaysChanged: (cb) => {

@@ -15,6 +15,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'setup.saving': 'Saving...',
     'setup.errorFormat': 'Player ID must be in format XXXX-XXXX-XXXX-XXXX',
     'setup.language': 'Language',
+    'setup.toggleTheme': 'Toggle light/dark theme',
 
     // ─── Activation Screen ──────────────────────────────────────────────
     'activation.requesting': 'Requesting activation code...',
@@ -83,6 +84,10 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.themeLight': 'Light',
     'settings.themeDark': 'Dark',
     'settings.themeSystem': 'System',
+    'settings.autoLaunch': 'Auto-launch after restart',
+    'settings.autoLaunchDesc': 'Start the player automatically after OS restart and restore playback using saved display settings.',
+    'settings.autoLaunchUnsupported': 'Auto-launch is not supported on this operating system.',
+    'settings.autoLaunchError': 'Failed to update auto-launch setting.',
 
     // ─── Control Shell ──────────────────────────────────────────────────
     'shell.status': 'Status',
@@ -108,6 +113,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'setup.saving': 'Сохранение...',
     'setup.errorFormat': 'ID плеера должен быть в формате XXXX-XXXX-XXXX-XXXX',
     'setup.language': 'Язык',
+    'setup.toggleTheme': 'Переключить светлую/тёмную тему',
 
     // ─── Activation Screen ──────────────────────────────────────────────
     'activation.requesting': 'Запрос кода активации...',
@@ -176,6 +182,10 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.themeLight': 'Светлая',
     'settings.themeDark': 'Тёмная',
     'settings.themeSystem': 'Системная',
+    'settings.autoLaunch': 'Автозапуск после перезагрузки',
+    'settings.autoLaunchDesc': 'Автоматически запускать плеер после перезагрузки ОС и восстанавливать Playback с сохранёнными настройками дисплеев.',
+    'settings.autoLaunchUnsupported': 'Автозапуск не поддерживается в этой операционной системе.',
+    'settings.autoLaunchError': 'Не удалось изменить настройку автозапуска.',
 
     // ─── Control Shell ──────────────────────────────────────────────────
     'shell.status': 'Статус',

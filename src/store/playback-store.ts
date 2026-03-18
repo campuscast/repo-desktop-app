@@ -1,9 +1,8 @@
 import { create } from 'zustand'
 import type {
   PlaybackState,
-  ScheduleSlot,
-  ContentAsset,
   ReleaseManifest,
+  PublicationItem,
 } from '../../electron/shared/ipc-types'
 import { isWithinSchedule } from '@/lib/utils'
 
@@ -29,10 +28,17 @@ const INITIAL_STATE: PlaybackState = {
   status: 'idle',
   currentSlot: null,
   currentAsset: null,
+  currentPublication: null,
+  currentPublicationItem: null,
   nextSlot: null,
   releaseId: null,
   errors: [],
   updatedAt: new Date().toISOString(),
+}
+
+function itemDurationMs(item: PublicationItem): number {
+  const duration = Number(item.duration_ms || 0)
+  return Number.isFinite(duration) && duration > 0 ? duration : 10_000
 }
 
 export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
@@ -97,6 +103,8 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
           status: 'idle',
           currentSlot: null,
           currentAsset: null,
+          currentPublication: null,
+          currentPublicationItem: null,
           nextSlot,
           releaseId: manifest.release_id,
           errors: [],
@@ -106,9 +114,60 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
       return
     }
 
-    // Find the asset for the active slot
-    const asset =
+    const publications = manifest.publications || []
+    const publication =
+      activeSlot.publication_id
+        ? publications.find((entry) => entry.publication_id === activeSlot.publication_id) ?? null
+        : null
+
+    let publicationItem: PublicationItem | null = null
+    if (publication && publication.items.length > 0) {
+      const elapsedMs = Math.max(
+        0,
+        now.getTime() - new Date(activeSlot.start_time).getTime(),
+      )
+      const totalDurationMs = publication.items.reduce(
+        (sum, item) => sum + itemDurationMs(item),
+        0,
+      )
+      let cursor = totalDurationMs > 0 ? elapsedMs % totalDurationMs : 0
+      for (const item of publication.items) {
+        const duration = itemDurationMs(item)
+        if (cursor < duration) {
+          publicationItem = item
+          break
+        }
+        cursor -= duration
+      }
+      if (!publicationItem) {
+        publicationItem = publication.items[0] ?? null
+      }
+    }
+
+    const slotAsset =
       manifest.assets.find((a) => a.asset_id === activeSlot.asset_id) ?? null
+    const publicationVideoAssetId =
+      publicationItem?.type === 'video_asset'
+        ? publicationItem.video?.asset_id
+        : null
+    const publicationImageAssetId =
+      publicationItem?.type === 'custom_slide'
+        ? publicationItem.slide?.image_asset_id
+        : null
+
+    const publicationVideoAsset = publicationVideoAssetId
+      ? manifest.assets.find((a) => a.asset_id === publicationVideoAssetId) ?? null
+      : null
+    const publicationImageAsset = publicationImageAssetId
+      ? manifest.assets.find((a) => a.asset_id === publicationImageAssetId) ?? null
+      : null
+
+    let asset = slotAsset
+    if (publicationItem?.type === 'video_asset') {
+      asset = publicationVideoAsset
+    } else if (publicationItem?.type === 'custom_slide') {
+      asset = publicationImageAsset
+    }
 
     // Check if content is available locally
     const localPath = asset ? assetPaths.get(asset.asset_id) : null
@@ -121,6 +180,8 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => ({
         status: localPath || !asset ? 'playing' : 'loading',
         currentSlot: activeSlot,
         currentAsset: assetWithPath,
+        currentPublication: publication,
+        currentPublicationItem: publicationItem,
         nextSlot,
         releaseId: manifest.release_id,
         errors: [],

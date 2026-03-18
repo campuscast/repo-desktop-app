@@ -1,11 +1,17 @@
 import { app, BrowserWindow, Menu, globalShortcut } from 'electron'
-import { createControlWindow } from './windows'
-import { initDisplayManager } from './display-manager'
+import { createControlWindow, openPlaybackWindows } from './windows'
+import { initDisplayManager, getDisplays } from './display-manager'
 import { registerIpcHandlers } from './ipc-handlers'
 import { persistence } from './services/persistence'
 import { heartbeatService } from './services/heartbeat'
 import { mqttService } from './services/mqtt-client'
 import { backendClient } from './services/backend-client'
+import { contentCacheService } from './services/content-cache'
+import {
+  getAutoLaunchSettings,
+  isLaunchedViaAutoLaunch,
+} from './services/auto-launch'
+import type { AppConfig, ReleaseManifest } from '../shared/ipc-types'
 
 // Prevent multiple instances
 const gotLock = app.requestSingleInstanceLock()
@@ -13,9 +19,93 @@ if (!gotLock) {
   app.quit()
 }
 
+function isManifestUsable(manifest: ReleaseManifest | null): manifest is ReleaseManifest {
+  if (!manifest) return false
+  if (!manifest.release_id || !manifest.schedule_id || !manifest.zone_id) return false
+  if (!Array.isArray(manifest.slots) || !Array.isArray(manifest.assets)) return false
+  return true
+}
+
+function openPlaybackUsingSavedDisplays(config: AppConfig): void {
+  const allDisplays = getDisplays()
+  const selected = allDisplays.filter((d) =>
+    config.selectedDisplayIds.includes(d.id)
+  )
+
+  if (selected.length > 0) {
+    openPlaybackWindows(selected)
+    return
+  }
+
+  const primary = allDisplays.find((d) => d.isPrimary) ?? allDisplays[0]
+  if (primary) {
+    openPlaybackWindows([primary])
+  }
+}
+
+async function syncScheduleOnAutoLaunch(config: AppConfig): Promise<void> {
+  if (!config.deviceToken || !config.deviceId) return
+
+  try {
+    const release = await backendClient.fetchRelease(
+      config.apiBaseUrl,
+      config.deviceToken,
+      config.deviceId
+    )
+    if (!release) return
+
+    const manifest = await backendClient.fetchManifest(
+      config.apiBaseUrl,
+      config.deviceToken,
+      release.release_id
+    )
+    if (!isManifestUsable(manifest)) {
+      throw new Error('Manifest payload is invalid')
+    }
+
+    const prefetch = await contentCacheService.prefetchManifestAssets(
+      manifest,
+      config.deviceToken
+    )
+    const verified = contentCacheService.verifyManifestAssets(manifest)
+    const now = new Date().toISOString()
+
+    persistence.saveLastManifest(manifest)
+    persistence.saveConfig({ lastSyncAt: now })
+
+    let cleanupAt: string | null = persistence.getCacheStatus().last_cleanup_at
+    if (verified.missing === 0) {
+      contentCacheService.cleanupUnusedAssets(manifest)
+      cleanupAt = now
+    }
+
+    persistence.saveCacheStatus({
+      current_release_id: manifest.release_id,
+      total_assets: verified.total,
+      available_assets: verified.available,
+      missing_assets: verified.missing,
+      last_prefetch_at: now,
+      last_cleanup_at: cleanupAt,
+      last_error:
+        prefetch.failed[0]
+        ?? (verified.missing > 0
+          ? `Missing ${verified.missing}/${verified.total} assets`
+          : null),
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    persistence.saveCacheStatus({ last_error: message })
+    console.warn('[autostart] Startup sync failed:', message)
+  }
+}
+
 app.whenReady().then(async () => {
   // Initialize persistence (load config from disk)
   await persistence.init()
+  const autoLaunchStatus = getAutoLaunchSettings()
+  if (autoLaunchStatus.supported) {
+    persistence.saveConfig({ autoLaunchEnabled: autoLaunchStatus.enabled })
+  }
 
   // Minimal menu: keep Edit roles so clipboard shortcuts (Cmd+V etc.) work on macOS
   if (process.platform === 'darwin') {
@@ -111,6 +201,17 @@ app.whenReady().then(async () => {
           console.warn('[startup] MQTT auto-connect failed:', err)
         })
     }
+  }
+
+  if (
+    isLaunchedViaAutoLaunch()
+    && config.autoLaunchEnabled
+    && config.activationState === 'activated'
+    && config.deviceToken
+    && config.deviceId
+  ) {
+    void syncScheduleOnAutoLaunch(config)
+    openPlaybackUsingSavedDisplays(config)
   }
 
   // macOS: re-create window when dock icon clicked

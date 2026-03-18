@@ -1,17 +1,29 @@
 import { net } from 'electron'
-import { createWriteStream, existsSync, unlinkSync } from 'fs'
-import { extname } from 'path'
+import { createWriteStream, existsSync, readdirSync, unlinkSync } from 'fs'
+import { basename, extname, join } from 'path'
 import { persistence } from './persistence'
+import type { ReleaseManifest } from '../../shared/ipc-types'
 
 class ContentCacheService {
+  private resolveLocalPath(
+    assetId: string,
+    url: string,
+    contentType?: string
+  ): string {
+    const ext = contentType
+      ? this.mimeToExt(contentType)
+      : extname(new URL(url).pathname) || '.bin'
+    return persistence.getContentFilePath(assetId, ext)
+  }
+
   /** Download a content file to local cache. Returns local file path. */
   async download(
     url: string,
     assetId: string,
-    deviceToken: string
+    deviceToken: string,
+    contentType?: string
   ): Promise<string> {
-    const ext = extname(new URL(url).pathname) || '.bin'
-    const localPath = persistence.getContentFilePath(assetId, ext)
+    const localPath = this.resolveLocalPath(assetId, url, contentType)
 
     // Skip if already cached
     if (existsSync(localPath)) {
@@ -68,10 +80,118 @@ class ContentCacheService {
     })
   }
 
+  async prefetchManifestAssets(
+    manifest: ReleaseManifest,
+    deviceToken: string
+  ): Promise<{
+    total: number
+    available: number
+    downloaded: number
+    failed: string[]
+  }> {
+    let available = 0
+    let downloaded = 0
+    const failed: string[] = []
+
+    for (const asset of manifest.assets) {
+      const localPath = this.resolveLocalPath(
+        asset.asset_id,
+        asset.download_url,
+        asset.content_type
+      )
+      if (existsSync(localPath)) {
+        available += 1
+        continue
+      }
+
+      try {
+        await this.download(
+          asset.download_url,
+          asset.asset_id,
+          deviceToken,
+          asset.content_type
+        )
+        available += 1
+        downloaded += 1
+      } catch (err) {
+        failed.push(
+          `${asset.asset_id}: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+
+    return {
+      total: manifest.assets.length,
+      available,
+      downloaded,
+      failed,
+    }
+  }
+
+  verifyManifestAssets(manifest: ReleaseManifest): {
+    total: number
+    available: number
+    missing: number
+    missingAssetIds: string[]
+  } {
+    const missingAssetIds: string[] = []
+    let available = 0
+
+    for (const asset of manifest.assets) {
+      const localPath = this.resolveLocalPath(
+        asset.asset_id,
+        asset.download_url,
+        asset.content_type
+      )
+      if (existsSync(localPath)) {
+        available += 1
+      } else {
+        missingAssetIds.push(asset.asset_id)
+      }
+    }
+
+    return {
+      total: manifest.assets.length,
+      available,
+      missing: manifest.assets.length - available,
+      missingAssetIds,
+    }
+  }
+
+  cleanupUnusedAssets(manifest: ReleaseManifest): number {
+    const keepFiles = new Set(
+      manifest.assets.map((asset) =>
+        basename(this.resolveLocalPath(
+          asset.asset_id,
+          asset.download_url,
+          asset.content_type
+        ))
+      )
+    )
+
+    const contentDir = persistence.getContentDir()
+    const files = readdirSync(contentDir, { withFileTypes: true })
+    let removed = 0
+
+    for (const entry of files) {
+      if (!entry.isFile()) continue
+      if (keepFiles.has(entry.name)) continue
+
+      const filePath = join(contentDir, entry.name)
+      try {
+        unlinkSync(filePath)
+        removed += 1
+      } catch (err) {
+        console.warn('[content-cache] Failed to cleanup file:', filePath, err)
+      }
+    }
+
+    return removed
+  }
+
   /** Get the local file path for a cached asset (or null) */
-  getLocalPath(assetId: string, contentType: string): string | null {
-    const ext = this.mimeToExt(contentType)
-    const path = persistence.getContentFilePath(assetId, ext)
+  getLocalPath(assetId: string, contentType: string, url = ''): string | null {
+    const path = this.resolveLocalPath(assetId, url || `https://cache/${assetId}`, contentType)
     return existsSync(path) ? path : null
   }
 

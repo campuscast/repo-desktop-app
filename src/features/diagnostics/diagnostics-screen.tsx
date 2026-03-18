@@ -25,6 +25,7 @@ import { usePlaybackStore } from '@/store/playback-store'
 import { useDisplays } from '@/hooks/use-displays'
 import { useLocale } from '@/hooks/use-locale'
 import { formatTime } from '@/lib/utils'
+import type { PlayerHealthSnapshot } from '../../../electron/shared/ipc-types'
 
 export function DiagnosticsScreen() {
   const config = useAppStore((s) => s.config)
@@ -36,6 +37,7 @@ export function DiagnosticsScreen() {
   const { displays, selectedDisplayIds, startPlayback, stopPlayback } =
     useDisplays()
   const [syncing, setSyncing] = useState(false)
+  const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null)
   const { t } = useLocale()
 
   const effectiveConnection =
@@ -73,6 +75,8 @@ export function DiagnosticsScreen() {
       // Refresh config from persistence so lastSyncAt is reflected in the UI
       const updatedConfig = await window.electronAPI.getConfig()
       setConfig(updatedConfig)
+      const nextHealth = await window.electronAPI.getHealthStatus()
+      setHealth(nextHealth)
     } catch (err) {
       useAppStore
         .getState()
@@ -84,12 +88,29 @@ export function DiagnosticsScreen() {
     }
   }, [config?.activationState, setConfig, setScreen])
 
+  const refreshHealth = useCallback(async () => {
+    try {
+      const snapshot = await window.electronAPI.getHealthStatus()
+      setHealth(snapshot)
+    } catch {
+      // Best-effort diagnostics poll
+    }
+  }, [])
+
   // Auto-sync on every launch when activated to refresh connectivity and schedule.
   useEffect(() => {
     if (config?.activationState === 'activated') {
       handleSync()
     }
   }, [config?.activationState, handleSync])
+
+  useEffect(() => {
+    void refreshHealth()
+    const timer = setInterval(() => {
+      void refreshHealth()
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [refreshHealth])
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -183,6 +204,54 @@ export function DiagnosticsScreen() {
             <span className="text-muted-foreground">{t('diagnostics.apiUrl')}</span>
             <span className="truncate font-mono text-xs">
               {config?.apiBaseUrl ?? '—'}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Runtime Health */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Runtime Health</CardTitle>
+          <CardDescription>Live player telemetry and cache readiness</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 gap-y-2 text-sm">
+            <span className="text-muted-foreground">Online</span>
+            <span>
+              <Badge variant={health?.online ? 'success' : 'destructive'}>
+                {health?.online ? 'online' : 'offline'}
+              </Badge>
+            </span>
+            <span className="text-muted-foreground">Backend / MQTT</span>
+            <span className="font-mono text-xs">
+              {health?.backend_status ?? '—'} / {health?.mqtt_status ?? '—'}
+            </span>
+            <span className="text-muted-foreground">Current release</span>
+            <span className="font-mono text-xs">
+              {health?.current_release_id ?? playbackState.releaseId ?? '—'}
+            </span>
+            <span className="text-muted-foreground">Playback status</span>
+            <span>{health?.playback_status ?? playbackState.status}</span>
+            <span className="text-muted-foreground">Cache assets</span>
+            <span className="font-mono text-xs">
+              {health ? `${health.cache.available_assets}/${health.cache.total_assets}` : '—'}
+            </span>
+            <span className="text-muted-foreground">Cache missing</span>
+            <span className="font-mono text-xs">
+              {health?.cache.missing_assets ?? '—'}
+            </span>
+            <span className="text-muted-foreground">Heartbeat success</span>
+            <span className="text-xs">
+              {formatTime(health?.heartbeat.last_success_at ?? null)}
+            </span>
+            <span className="text-muted-foreground">Heartbeat attempt</span>
+            <span className="text-xs">
+              {formatTime(health?.heartbeat.last_attempt_at ?? null)}
+            </span>
+            <span className="text-muted-foreground">Last error</span>
+            <span className="text-xs text-destructive/80">
+              {health?.last_error ?? '—'}
             </span>
           </div>
         </CardContent>

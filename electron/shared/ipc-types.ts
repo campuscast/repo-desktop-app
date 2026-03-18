@@ -28,6 +28,12 @@ export interface AppConfig {
   exitShortcutAccelerator: string
   locale: Locale
   theme: Theme
+  autoLaunchEnabled: boolean
+}
+
+export interface AutoLaunchSettings {
+  enabled: boolean
+  supported: boolean
 }
 
 export type ActivationState = 'unregistered' | 'pending' | 'activated'
@@ -77,15 +83,25 @@ export interface ReleaseNotification {
 
 // ─── Schedule / Playback ────────────────────────────────────────────────────
 
+export interface SlotMetadata {
+  transition_type?: 'cut' | 'fade'
+  transition_duration_ms?: number
+  video_trim_in_ms?: number
+  video_trim_out_ms?: number
+  video_mute?: boolean
+  video_loop?: boolean
+}
+
 export interface ScheduleSlot {
   slot_id: string
   asset_id: string
+  publication_id?: string
   start_time: string // ISO 8601
   end_time: string   // ISO 8601
   priority: number
   zone_id: string
   group_id: string
-  metadata: Record<string, string>
+  metadata?: SlotMetadata
 }
 
 export interface Release {
@@ -110,6 +126,50 @@ export interface ContentAsset {
   metadata: Record<string, string>
 }
 
+export interface PublicationItemTransition {
+  type?: 'cut' | 'fade'
+  duration_ms?: number
+}
+
+export interface PublicationSlidePayload {
+  background?: string
+  title?: string
+  body?: string
+  image_asset_id?: string
+  logo_asset_id?: string
+  layout?: 'centered' | 'split' | 'title-top'
+}
+
+export interface PublicationVideoPayload {
+  asset_id?: string
+  trim_in_ms?: number
+  trim_out_ms?: number
+  mute?: boolean
+  loop?: boolean
+}
+
+export interface PublicationItem {
+  item_id?: string
+  type: 'custom_slide' | 'video_asset'
+  title?: string
+  duration_ms?: number
+  transition?: PublicationItemTransition
+  slide?: PublicationSlidePayload
+  video?: PublicationVideoPayload
+  metadata?: Record<string, unknown>
+}
+
+export interface Publication {
+  publication_id: string
+  zone_id: string
+  title: string
+  type: string
+  status: string
+  version: number
+  items: PublicationItem[]
+  metadata?: Record<string, unknown>
+}
+
 export interface ReleaseManifest {
   release_id: string
   schedule_id: string
@@ -117,6 +177,7 @@ export interface ReleaseManifest {
   zone_id: string
   slots: ScheduleSlot[]
   assets: ContentAsset[]
+  publications?: Publication[]
   manifest_hash: string
   created_at: string
 }
@@ -125,10 +186,41 @@ export interface PlaybackState {
   status: 'idle' | 'playing' | 'loading' | 'error' | 'offline'
   currentSlot: ScheduleSlot | null
   currentAsset: ContentAsset | null
+  currentPublication: Publication | null
+  currentPublicationItem: PublicationItem | null
   nextSlot: ScheduleSlot | null
   releaseId: string | null
   errors: string[]
   updatedAt: string
+}
+
+export interface CacheStatus {
+  current_release_id: string | null
+  total_assets: number
+  available_assets: number
+  missing_assets: number
+  last_prefetch_at: string | null
+  last_cleanup_at: string | null
+  last_error: string | null
+}
+
+export interface HeartbeatStatus {
+  running: boolean
+  interval_ms: number
+  last_attempt_at: string | null
+  last_success_at: string | null
+  last_error: string | null
+}
+
+export interface PlayerHealthSnapshot {
+  online: boolean
+  backend_status: ConnectionStatus['backend']
+  mqtt_status: ConnectionStatus['mqtt']
+  current_release_id: string | null
+  playback_status: PlaybackState['status']
+  cache: CacheStatus
+  heartbeat: HeartbeatStatus
+  last_error: string | null
 }
 
 export interface TelemetryPayload {
@@ -140,6 +232,11 @@ export interface TelemetryPayload {
   displays: DisplayInfo[]
   selected_displays: string[]
   timestamp: string
+  online?: boolean
+  backend_status?: ConnectionStatus['backend']
+  mqtt_status?: ConnectionStatus['mqtt']
+  cache?: CacheStatus
+  last_error?: string | null
 }
 
 // ─── IPC Request / Response map ─────────────────────────────────────────────

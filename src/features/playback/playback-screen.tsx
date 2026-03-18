@@ -81,9 +81,11 @@ export function PlaybackScreen({ displayId }: PlaybackScreenProps) {
   // Playing state
   return (
     <div className="h-screen w-screen overflow-hidden bg-black">
-      {state.currentAsset && (
-        <PlaybackItem asset={state.currentAsset} />
-      )}
+      <PlaybackItem
+        asset={state.currentAsset}
+        metadata={state.currentSlot?.metadata}
+        publicationItem={state.currentPublicationItem}
+      />
     </div>
   )
 }

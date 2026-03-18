@@ -187,7 +187,7 @@ pnpm dist           # Build + create installer
 5. Offline Recovery
    ├── Detect MQTT disconnect
    ├── Show offline banner in control window
-   ├── Continue playback using cached schedule + content
+   ├── Continue playback using last-known-good manifest + cached content
    ├── Auto-reconnect with backoff
    └── Re-sync on reconnect
 ```
@@ -227,6 +227,7 @@ Data is stored in `{userData}/player-data/`:
 | --------------------- | ----------------------------------------------------------- |
 | `config.json`         | Device ID, token, URLs, activation state, selected displays |
 | `last-manifest.json`  | Last received release manifest (offline fallback)           |
+| `cache-status.json`   | Cache lifecycle/health counters for diagnostics + telemetry  |
 | `playback-state.json` | Current playback state (for telemetry)                      |
 | `content/`            | Downloaded media files (images, videos)                     |
 

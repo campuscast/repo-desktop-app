@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Save, Pencil, X, Globe, Sun, Moon, Monitor } from 'lucide-react'
+import { Save, Pencil, X, Globe, Sun, Moon, Monitor, Power } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { useAppStore } from '@/store/app-store'
 import { useLocale } from '@/hooks/use-locale'
 import { useTheme } from '@/hooks/use-theme'
@@ -117,13 +118,46 @@ export function SettingsScreen() {
   const [mqttBrokerUrl, setMqttBrokerUrl] = useState(config?.mqttBrokerUrl ?? '')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [autoLaunchEnabled, setAutoLaunchEnabled] = useState(
+    config?.autoLaunchEnabled ?? false
+  )
+  const [autoLaunchSupported, setAutoLaunchSupported] = useState(true)
+  const [autoLaunchLoading, setAutoLaunchLoading] = useState(true)
+  const [autoLaunchSaving, setAutoLaunchSaving] = useState(false)
+  const [autoLaunchError, setAutoLaunchError] = useState<string | null>(null)
 
   useEffect(() => {
     if (config) {
       setApiBaseUrl(config.apiBaseUrl)
       setMqttBrokerUrl(config.mqttBrokerUrl)
+      setAutoLaunchEnabled(config.autoLaunchEnabled)
     }
   }, [config])
+
+  useEffect(() => {
+    let mounted = true
+
+    window.electronAPI
+      .getAutoLaunchSettings()
+      .then((settings) => {
+        if (!mounted) return
+        setAutoLaunchEnabled(settings.enabled)
+        setAutoLaunchSupported(settings.supported)
+      })
+      .catch(() => {
+        if (!mounted) return
+        setAutoLaunchError(t('settings.autoLaunchError'))
+      })
+      .finally(() => {
+        if (mounted) {
+          setAutoLaunchLoading(false)
+        }
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [t])
 
   // ─── Shortcut recording ────────────────────────────────────────────
 
@@ -212,6 +246,22 @@ export function SettingsScreen() {
   const hasUrlChanges =
     apiBaseUrl.trim() !== (config?.apiBaseUrl ?? '') ||
     mqttBrokerUrl.trim() !== (config?.mqttBrokerUrl ?? '')
+
+  async function handleAutoLaunchToggle(enabled: boolean) {
+    setAutoLaunchSaving(true)
+    setAutoLaunchError(null)
+    try {
+      const status = await window.electronAPI.setAutoLaunchEnabled(enabled)
+      setAutoLaunchEnabled(status.enabled)
+      setAutoLaunchSupported(status.supported)
+      const updatedConfig = await window.electronAPI.getConfig()
+      useAppStore.getState().setConfig(updatedConfig)
+    } catch {
+      setAutoLaunchError(t('settings.autoLaunchError'))
+    } finally {
+      setAutoLaunchSaving(false)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -335,6 +385,38 @@ export function SettingsScreen() {
                 </Button>
               )
             })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Auto Launch */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Power className="h-4 w-4" />
+            {t('settings.autoLaunch')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">
+                {t('settings.autoLaunchDesc')}
+              </p>
+              {!autoLaunchSupported && (
+                <p className="text-xs text-muted-foreground">
+                  {t('settings.autoLaunchUnsupported')}
+                </p>
+              )}
+              {autoLaunchError && (
+                <p className="text-xs text-destructive">{autoLaunchError}</p>
+              )}
+            </div>
+            <Switch
+              checked={autoLaunchEnabled}
+              onCheckedChange={handleAutoLaunchToggle}
+              disabled={!autoLaunchSupported || autoLaunchLoading || autoLaunchSaving}
+            />
           </div>
         </CardContent>
       </Card>

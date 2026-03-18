@@ -3,6 +3,7 @@ import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import type {
   AppConfig,
+  CacheStatus,
   ReleaseManifest,
   PlaybackState,
 } from '../../shared/ipc-types'
@@ -29,12 +30,24 @@ const DEFAULT_CONFIG: AppConfig = {
   exitShortcutAccelerator: 'Ctrl+Alt+Shift+Q',
   locale: 'en',
   theme: 'dark',
+  autoLaunchEnabled: false,
+}
+
+const DEFAULT_CACHE_STATUS: CacheStatus = {
+  current_release_id: null,
+  total_assets: 0,
+  available_assets: 0,
+  missing_assets: 0,
+  last_prefetch_at: null,
+  last_cleanup_at: null,
+  last_error: null,
 }
 
 class PersistenceService {
   private dataDir = ''
   private config: AppConfig = { ...DEFAULT_CONFIG }
   private lastManifest: ReleaseManifest | null = null
+  private cacheStatus: CacheStatus = { ...DEFAULT_CACHE_STATUS }
 
   async init(): Promise<void> {
     this.dataDir = join(app.getPath('userData'), 'player-data')
@@ -46,6 +59,10 @@ class PersistenceService {
     this.lastManifest = this.loadJson<ReleaseManifest | null>(
       'last-manifest.json',
       null
+    )
+    this.cacheStatus = this.loadJson<CacheStatus>(
+      'cache-status.json',
+      { ...DEFAULT_CACHE_STATUS }
     )
   }
 
@@ -65,6 +82,15 @@ class PersistenceService {
   saveLastManifest(manifest: ReleaseManifest): void {
     this.lastManifest = manifest
     this.saveJson('last-manifest.json', manifest)
+  }
+
+  getCacheStatus(): CacheStatus {
+    return { ...this.cacheStatus }
+  }
+
+  saveCacheStatus(status: Partial<CacheStatus>): void {
+    this.cacheStatus = { ...this.cacheStatus, ...status }
+    this.saveJson('cache-status.json', this.cacheStatus)
   }
 
   getContentDir(): string {

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Monitor, ArrowRight, Settings, Globe } from 'lucide-react'
+import { Monitor, ArrowRight, Settings, Globe, Sun, Moon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -11,7 +11,8 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { useAppStore } from '@/store/app-store'
 import { useLocale } from '@/hooks/use-locale'
-import type { Locale } from '../../../electron/shared/ipc-types'
+import { useTheme } from '@/hooks/use-theme'
+import type { Locale, Theme } from '../../../electron/shared/ipc-types'
 
 const SEGMENT_COUNT = 4
 const SEGMENT_LENGTH = 4
@@ -39,11 +40,21 @@ function joinDeviceId(segments: string[]): string {
   return segments.join('-')
 }
 
+function getEffectiveTheme(theme: Theme): 'light' | 'dark' {
+  if (theme === 'system') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light'
+  }
+  return theme
+}
+
 /** First-run screen: enter Device ID and backend URL */
 export function SetupScreen() {
   const config = useAppStore((s) => s.config)
   const setScreen = useAppStore((s) => s.setScreen)
   const { t, locale, changeLocale } = useLocale()
+  const { theme, changeTheme } = useTheme()
 
   const [deviceIdSegments, setDeviceIdSegments] = useState(() =>
     splitDeviceId(config?.deviceId ?? '')
@@ -57,6 +68,7 @@ export function SetupScreen() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const segmentRefs = useRef<Array<HTMLInputElement | null>>([])
+  const effectiveTheme = getEffectiveTheme(theme)
 
   function focusSegment(index: number) {
     const input = segmentRefs.current[index]
@@ -221,7 +233,19 @@ export function SetupScreen() {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-background p-8">
       {/* Language Switcher — top-right corner */}
-      <div className="absolute right-4 top-4 flex items-center gap-1">
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <button
+          onClick={() => changeTheme(effectiveTheme === 'dark' ? 'light' : 'dark')}
+          className="rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={t('setup.toggleTheme')}
+          aria-label={t('setup.toggleTheme')}
+        >
+          {effectiveTheme === 'dark' ? (
+            <Sun className="h-3.5 w-3.5" />
+          ) : (
+            <Moon className="h-3.5 w-3.5" />
+          )}
+        </button>
         <Globe className="h-3.5 w-3.5 text-muted-foreground" />
         {LOCALES.map((loc) => (
           <button
