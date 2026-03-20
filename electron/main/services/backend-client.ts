@@ -8,6 +8,8 @@ import type {
   TelemetryPayload,
 } from '../../shared/ipc-types'
 
+const DEFAULT_HTTP_TIMEOUT_MS = 12_000
+
 export class BackendHttpError extends Error {
   constructor(
     public readonly statusCode: number | null,
@@ -20,16 +22,35 @@ export class BackendHttpError extends Error {
   }
 }
 
+export function isBackendHttpErrorWithStatus(
+  error: unknown,
+  statuses: number[]
+): error is BackendHttpError {
+  return (
+    error instanceof BackendHttpError
+    && error.statusCode !== null
+    && statuses.includes(error.statusCode)
+  )
+}
+
+export type ActivatedDeviceVerificationResult =
+  | { status: 'exists'; info: DeviceInfo }
+  | { status: 'missing' }
+  | { status: 'unknown' }
+
 /** Performs HTTP requests to CMS backend from the main process using Electron's net module */
 class BackendClient {
   /** POST /enrollment/request-code — unauthenticated */
   async requestActivationCode(
     apiBaseUrl: string,
-    deviceId: string
+    deviceId: string,
+    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
   ): Promise<ActivationCodeResponse> {
     return this.post<ActivationCodeResponse>(
       `${apiBaseUrl}/enrollment/request-code`,
-      { device_id: deviceId }
+      { device_id: deviceId },
+      undefined,
+      timeoutMs
     )
   }
 
@@ -59,10 +80,11 @@ class BackendClient {
    */
   async checkDeviceExists(
     apiBaseUrl: string,
-    deviceId: string
+    deviceId: string,
+    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
   ): Promise<'exists' | 'missing' | 'unknown'> {
     try {
-      await this.requestActivationCode(apiBaseUrl, deviceId)
+      await this.requestActivationCode(apiBaseUrl, deviceId, timeoutMs)
       return 'exists'
     } catch (err) {
       if (err instanceof BackendHttpError) {
@@ -77,12 +99,48 @@ class BackendClient {
   async fetchDeviceInfo(
     apiBaseUrl: string,
     deviceToken: string,
-    deviceId: string
+    deviceId: string,
+    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
   ): Promise<DeviceInfo> {
     return this.get<DeviceInfo>(
       `${apiBaseUrl}/player/device-info?device_id=${encodeURIComponent(deviceId)}`,
-      deviceToken
+      deviceToken,
+      timeoutMs
     )
+  }
+
+  /**
+   * Verifies active device session with authenticated /player/device-info.
+   * - exists: authenticated device is still valid and info is returned
+   * - missing: token/device pair is no longer valid in CMS (401/403/404)
+   * - unknown: transient/network/backend errors
+   */
+  async verifyActivatedDevice(
+    apiBaseUrl: string,
+    deviceToken: string,
+    deviceId: string,
+    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
+  ): Promise<ActivatedDeviceVerificationResult> {
+    try {
+      const info = await this.fetchDeviceInfo(
+        apiBaseUrl,
+        deviceToken,
+        deviceId,
+        timeoutMs
+      )
+      return { status: 'exists', info }
+    } catch (err) {
+      if (err instanceof BackendHttpError) {
+        if (
+          err.statusCode === 401
+          || err.statusCode === 403
+          || err.statusCode === 404
+        ) {
+          return { status: 'missing' }
+        }
+      }
+      return { status: 'unknown' }
+    }
   }
 
   /** GET /player/release?device_id=X — authenticated */
@@ -132,14 +190,33 @@ class BackendClient {
 
   // ─── HTTP primitives ──────────────────────────────────────────────────
 
-  private get<T>(url: string, token?: string): Promise<T> {
+  private get<T>(
+    url: string,
+    token?: string,
+    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      let settled = false
       const headers: Record<string, string> = {
         Accept: 'application/json',
       }
       if (token) headers.Authorization = `Bearer ${token}`
 
       const request = net.request({ method: 'GET', url, headers })
+      const timeoutTimer = setTimeout(() => {
+        request.abort()
+        if (!settled) {
+          settled = true
+          reject(new Error(`Request timeout after ${timeoutMs}ms: ${url}`))
+        }
+      }, timeoutMs)
+
+      const fail = (err: unknown): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutTimer)
+        reject(err)
+      }
 
       let body = ''
       request.on('response', (response) => {
@@ -147,6 +224,9 @@ class BackendClient {
           body += chunk.toString()
         })
         response.on('end', () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeoutTimer)
           if (
             response.statusCode &&
             response.statusCode >= 200 &&
@@ -161,10 +241,10 @@ class BackendClient {
             reject(new BackendHttpError(response.statusCode ?? null, body))
           }
         })
-        response.on('error', reject)
+        response.on('error', fail)
       })
 
-      request.on('error', reject)
+      request.on('error', fail)
       request.end()
     })
   }
@@ -172,9 +252,11 @@ class BackendClient {
   private post<T = void>(
     url: string,
     data: unknown,
-    token?: string
+    token?: string,
+    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      let settled = false
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         Accept: 'application/json',
@@ -182,6 +264,20 @@ class BackendClient {
       if (token) headers.Authorization = `Bearer ${token}`
 
       const request = net.request({ method: 'POST', url, headers })
+      const timeoutTimer = setTimeout(() => {
+        request.abort()
+        if (!settled) {
+          settled = true
+          reject(new Error(`Request timeout after ${timeoutMs}ms: ${url}`))
+        }
+      }, timeoutMs)
+
+      const fail = (err: unknown): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutTimer)
+        reject(err)
+      }
 
       let body = ''
       request.on('response', (response) => {
@@ -189,6 +285,9 @@ class BackendClient {
           body += chunk.toString()
         })
         response.on('end', () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeoutTimer)
           if (response.statusCode === 204) {
             resolve(undefined as T)
           } else if (
@@ -205,10 +304,10 @@ class BackendClient {
             reject(new BackendHttpError(response.statusCode ?? null, body))
           }
         })
-        response.on('error', reject)
+        response.on('error', fail)
       })
 
-      request.on('error', reject)
+      request.on('error', fail)
       request.write(JSON.stringify(data))
       request.end()
     })

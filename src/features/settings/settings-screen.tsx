@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Save, Pencil, X, Globe, Sun, Moon, Monitor, Power } from 'lucide-react'
+import {
+  Save,
+  Pencil,
+  X,
+  Globe,
+  Sun,
+  Moon,
+  Monitor,
+  Power,
+  HardDrive,
+  Trash2,
+} from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -12,7 +23,7 @@ import { Switch } from '@/components/ui/switch'
 import { useAppStore } from '@/store/app-store'
 import { useLocale } from '@/hooks/use-locale'
 import { useTheme } from '@/hooks/use-theme'
-import type { Locale, Theme } from '../../../electron/shared/ipc-types'
+import type { CacheInfo, Locale, Theme } from '../../../electron/shared/ipc-types'
 
 // ─── Shortcut Recorder helpers ─────────────────────────────────────────────
 
@@ -98,6 +109,14 @@ const THEME_OPTIONS: Array<{ value: Theme; icon: React.ElementType; labelKey: st
   { value: 'system', icon: Monitor, labelKey: 'settings.themeSystem' },
 ]
 
+function formatBytes(value: number): string {
+  if (value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  const normalized = value / Math.pow(1024, exponent)
+  return `${normalized >= 10 ? normalized.toFixed(0) : normalized.toFixed(1)} ${units[exponent]}`
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function SettingsScreen() {
@@ -125,6 +144,10 @@ export function SettingsScreen() {
   const [autoLaunchLoading, setAutoLaunchLoading] = useState(true)
   const [autoLaunchSaving, setAutoLaunchSaving] = useState(false)
   const [autoLaunchError, setAutoLaunchError] = useState<string | null>(null)
+  const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null)
+  const [cacheLoading, setCacheLoading] = useState(true)
+  const [cacheClearing, setCacheClearing] = useState(false)
+  const [cacheMessage, setCacheMessage] = useState<string | null>(null)
 
   useEffect(() => {
     if (config) {
@@ -158,6 +181,21 @@ export function SettingsScreen() {
       mounted = false
     }
   }, [t])
+
+  const loadCacheInfo = useCallback(async () => {
+    try {
+      const info = await window.electronAPI.getCacheInfo()
+      setCacheInfo(info)
+    } catch {
+      setCacheMessage(t('settings.cacheLoadError'))
+    } finally {
+      setCacheLoading(false)
+    }
+  }, [t])
+
+  useEffect(() => {
+    void loadCacheInfo()
+  }, [loadCacheInfo])
 
   // ─── Shortcut recording ────────────────────────────────────────────
 
@@ -260,6 +298,35 @@ export function SettingsScreen() {
       setAutoLaunchError(t('settings.autoLaunchError'))
     } finally {
       setAutoLaunchSaving(false)
+    }
+  }
+
+  async function handleClearCache() {
+    const confirmed = window.confirm(t('settings.cacheClearConfirm'))
+    if (!confirmed) return
+
+    setCacheClearing(true)
+    setCacheMessage(null)
+    try {
+      const result = await window.electronAPI.clearCache()
+      await loadCacheInfo()
+      const summary = t('settings.cacheClearSummary', {
+        files: result.media_files_removed,
+        size: formatBytes(result.bytes_reclaimed),
+      })
+      if (result.media_files_failed > 0) {
+        setCacheMessage(
+          `${summary} ${t('settings.cacheClearPartial', {
+            failed: result.media_files_failed,
+          })}`
+        )
+      } else {
+        setCacheMessage(summary)
+      }
+    } catch {
+      setCacheMessage(t('settings.cacheClearError'))
+    } finally {
+      setCacheClearing(false)
     }
   }
 
@@ -417,6 +484,48 @@ export function SettingsScreen() {
               onCheckedChange={handleAutoLaunchToggle}
               disabled={!autoLaunchSupported || autoLaunchLoading || autoLaunchSaving}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Cache Settings */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <HardDrive className="h-4 w-4" />
+            {t('settings.cacheTitle')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              {t('settings.cacheDesc')}
+            </p>
+            <div className="grid grid-cols-2 gap-y-1 text-xs">
+              <span className="text-muted-foreground">{t('settings.cacheFiles')}</span>
+              <span className="font-mono">
+                {cacheLoading ? '—' : cacheInfo?.media_files ?? 0}
+              </span>
+              <span className="text-muted-foreground">{t('settings.cacheSize')}</span>
+              <span className="font-mono">
+                {cacheLoading ? '—' : formatBytes(cacheInfo?.total_bytes ?? 0)}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t('settings.cacheImpact')}
+            </p>
+            {cacheMessage && (
+              <p className="text-xs text-muted-foreground">{cacheMessage}</p>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleClearCache}
+              disabled={cacheClearing || cacheLoading}
+            >
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              {cacheClearing ? t('settings.cacheClearing') : t('settings.clearCache')}
+            </Button>
           </div>
         </CardContent>
       </Card>

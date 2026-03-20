@@ -1,14 +1,10 @@
 import { WifiOff } from 'lucide-react'
 import { useAppStore } from '@/store/app-store'
+import { deriveEffectiveConnection } from '../../../electron/shared/connection-status'
 
 export function OfflineBanner() {
   const connectionStatus = useAppStore((s) => s.connectionStatus)
-  const effectiveConnection =
-    connectionStatus.backend === 'connected' || connectionStatus.mqtt === 'connected'
-      ? 'connected'
-      : connectionStatus.backend === 'connecting' || connectionStatus.mqtt === 'connecting'
-        ? 'connecting'
-        : 'disconnected'
+  const effectiveConnection = deriveEffectiveConnection(connectionStatus)
 
   if (effectiveConnection !== 'disconnected') return null
 

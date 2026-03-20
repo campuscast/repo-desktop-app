@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { useLocale } from '@/hooks/use-locale'
 import { cn } from '@/lib/utils'
+import { deriveEffectiveConnection } from '../../../electron/shared/connection-status'
 
 const PLATFORM_LABELS: Record<string, string> = {
   darwin: 'macOS',
@@ -43,12 +44,7 @@ export function ControlShell() {
     })
   }, [])
 
-  const effectiveConnection =
-    connectionStatus.backend === 'connected' || connectionStatus.mqtt === 'connected'
-      ? 'connected'
-      : connectionStatus.backend === 'connecting' || connectionStatus.mqtt === 'connecting'
-        ? 'connecting'
-        : 'disconnected'
+  const effectiveConnection = deriveEffectiveConnection(connectionStatus)
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background">

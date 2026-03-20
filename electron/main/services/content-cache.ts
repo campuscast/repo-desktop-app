@@ -1,8 +1,18 @@
 import { net } from 'electron'
-import { createWriteStream, existsSync, readdirSync, unlinkSync } from 'fs'
+import {
+  createWriteStream,
+  existsSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+} from 'fs'
 import { basename, extname, join } from 'path'
-import { persistence } from './persistence'
-import type { ReleaseManifest } from '../../shared/ipc-types'
+import { persistence } from './persistence.js'
+import type {
+  CacheClearResult,
+  CacheInfo,
+  ReleaseManifest,
+} from '../../shared/ipc-types'
 
 class ContentCacheService {
   private resolveLocalPath(
@@ -193,6 +203,64 @@ class ContentCacheService {
   getLocalPath(assetId: string, contentType: string, url = ''): string | null {
     const path = this.resolveLocalPath(assetId, url || `https://cache/${assetId}`, contentType)
     return existsSync(path) ? path : null
+  }
+
+  getCacheInfo(): CacheInfo {
+    const contentDir = persistence.getContentDir()
+    const files = readdirSync(contentDir, { withFileTypes: true })
+    let mediaFiles = 0
+    let totalBytes = 0
+
+    for (const entry of files) {
+      if (!entry.isFile()) continue
+      mediaFiles += 1
+      const fullPath = join(contentDir, entry.name)
+      try {
+        totalBytes += statSync(fullPath).size
+      } catch {
+        // Ignore per-file stat failures and continue.
+      }
+    }
+
+    return {
+      content_dir: contentDir,
+      media_files: mediaFiles,
+      total_bytes: totalBytes,
+    }
+  }
+
+  clearMediaCache(): Omit<CacheClearResult, 'browser_cache_cleared'> {
+    const contentDir = persistence.getContentDir()
+    const files = readdirSync(contentDir, { withFileTypes: true })
+    let mediaFilesRemoved = 0
+    let mediaFilesFailed = 0
+    let bytesReclaimed = 0
+
+    for (const entry of files) {
+      if (!entry.isFile()) continue
+      const fullPath = join(contentDir, entry.name)
+      let size = 0
+      try {
+        size = statSync(fullPath).size
+      } catch {
+        size = 0
+      }
+
+      try {
+        unlinkSync(fullPath)
+        mediaFilesRemoved += 1
+        bytesReclaimed += size
+      } catch (err) {
+        mediaFilesFailed += 1
+        console.warn('[content-cache] Failed to delete cache file:', fullPath, err)
+      }
+    }
+
+    return {
+      media_files_removed: mediaFilesRemoved,
+      media_files_failed: mediaFilesFailed,
+      bytes_reclaimed: bytesReclaimed,
+    }
   }
 
   private mimeToExt(mime: string): string {

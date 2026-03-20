@@ -7,12 +7,14 @@ import type {
 import { getDisplays } from '../display-manager'
 import { persistence } from './persistence'
 import { mqttService } from './mqtt-client'
+import { isProvisioningInvalidationStatus } from './provisioning-invalidation-policy'
 
 const HEARTBEAT_INTERVAL_MS = 30_000 // 30 seconds
 
 class HeartbeatService {
   private timer: ReturnType<typeof setInterval> | null = null
   private config: AppConfig | null = null
+  private provisioningInvalidationHandler: ((reason: string) => void) | null = null
   private status: HeartbeatStatus = {
     running: false,
     interval_ms: HEARTBEAT_INTERVAL_MS,
@@ -41,6 +43,12 @@ class HeartbeatService {
 
   updateConfig(config: AppConfig): void {
     this.config = config
+  }
+
+  setProvisioningInvalidationHandler(
+    handler: ((reason: string) => void) | null
+  ): void {
+    this.provisioningInvalidationHandler = handler
   }
 
   getStatus(): HeartbeatStatus {
@@ -90,6 +98,16 @@ class HeartbeatService {
           if (response.statusCode === 204 || response.statusCode === 200) {
             this.status.last_success_at = new Date().toISOString()
             this.status.last_error = null
+            resolve()
+          } else if (
+            isProvisioningInvalidationStatus(
+              response.statusCode ?? null,
+              'heartbeat'
+            )
+          ) {
+            const reason = `Device provisioning invalidated (heartbeat status ${response.statusCode})`
+            this.status.last_error = reason
+            this.provisioningInvalidationHandler?.(reason)
             resolve()
           } else {
             reject(new Error(`Telemetry failed: ${response.statusCode}`))

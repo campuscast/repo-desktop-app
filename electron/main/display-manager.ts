@@ -40,6 +40,44 @@ export function initDisplayManager(controlWindow: BrowserWindow): void {
   })
 }
 
+export async function waitForDisplayStability(
+  settleMs = 1200,
+  timeoutMs = 6000
+): Promise<DisplayInfo[]> {
+  return new Promise((resolve) => {
+    let settled = false
+    let settleTimer: NodeJS.Timeout | null = null
+    let timeoutTimer: NodeJS.Timeout | null = null
+
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      if (settleTimer) clearTimeout(settleTimer)
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      screen.removeListener('display-added', onDisplayChanged)
+      screen.removeListener('display-removed', onDisplayChanged)
+      screen.removeListener('display-metrics-changed', onDisplayChanged)
+      resolve(getDisplays())
+    }
+
+    const scheduleSettle = (): void => {
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = setTimeout(finish, settleMs)
+    }
+
+    const onDisplayChanged = (): void => {
+      scheduleSettle()
+    }
+
+    screen.on('display-added', onDisplayChanged)
+    screen.on('display-removed', onDisplayChanged)
+    screen.on('display-metrics-changed', onDisplayChanged)
+
+    timeoutTimer = setTimeout(finish, timeoutMs)
+    scheduleSettle()
+  })
+}
+
 function notifyDisplayChange(
   controlWindow: BrowserWindow,
   displays: DisplayInfo[]

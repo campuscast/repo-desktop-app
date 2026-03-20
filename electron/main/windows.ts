@@ -2,11 +2,18 @@ import { app, BrowserWindow, screen, shell, powerSaveBlocker } from 'electron'
 import { join } from 'path'
 import type { DisplayInfo } from '../shared/ipc-types'
 import { registerExitShortcut, unregisterExitShortcut } from './shortcut-manager'
+import {
+  enterPlaybackPresentationMode,
+  exitPlaybackPresentationMode,
+  type PlaybackPresentationState,
+} from './playback-presentation'
+import { startupMark } from './startup-trace'
 
 const isDev = process.env.NODE_ENV !== 'production'
 
 let controlWindow: BrowserWindow | null = null
 const playbackWindows = new Map<string, BrowserWindow>()
+const playbackPresentationStates = new Map<string, PlaybackPresentationState>()
 let powerSaveBlockerId: number | null = null
 
 function getPreloadPath(): string {
@@ -40,10 +47,26 @@ export function createControlWindow(): BrowserWindow {
     },
   })
 
-  // Graceful show
+  let shown = false
+  const showControlWindow = (reason: string): void => {
+    if (shown) return
+    if (!controlWindow || controlWindow.isDestroyed()) return
+    shown = true
+    startupMark('main:control-window-show', { reason })
+    controlWindow.show()
+  }
+
   controlWindow.on('ready-to-show', () => {
-    controlWindow?.show()
+    startupMark('main:control-window-ready-to-show')
+    showControlWindow('ready-to-show')
   })
+  controlWindow.webContents.on('did-finish-load', () => {
+    startupMark('main:control-window-did-finish-load')
+    showControlWindow('did-finish-load')
+  })
+  setTimeout(() => {
+    showControlWindow('show-timeout')
+  }, 1200)
 
   // Open external links in system browser
   controlWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -53,8 +76,10 @@ export function createControlWindow(): BrowserWindow {
 
   // Load renderer
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
+    startupMark('main:control-window-load-url')
     controlWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=control`)
   } else {
+    startupMark('main:control-window-load-file')
     controlWindow.loadFile(getRendererPath(), {
       query: { mode: 'control' },
     })
@@ -80,11 +105,13 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
     y: display.y,
     width: display.width,
     height: display.height,
-    fullscreen: true,
+    fullscreen: false,
+    fullscreenable: true,
+    simpleFullscreen: process.platform === 'darwin',
     frame: false,
     resizable: false,
     skipTaskbar: true,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     backgroundColor: '#000000',
     show: false,
     webPreferences: {
@@ -96,8 +123,17 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
   })
 
   win.on('ready-to-show', () => {
+    // Ensure we stay on the selected display before entering presentation mode.
+    win.setBounds({
+      x: display.x,
+      y: display.y,
+      width: display.width,
+      height: display.height,
+    })
+    const previousState = enterPlaybackPresentationMode(win)
+    playbackPresentationStates.set(display.id, previousState)
     win.show()
-    win.setFullScreen(true)
+    win.focus()
   })
 
   // Prevent closing with keyboard shortcuts during playback
@@ -132,6 +168,7 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
 
   win.on('closed', () => {
     playbackWindows.delete(display.id)
+    playbackPresentationStates.delete(display.id)
   })
 
   return win
@@ -139,11 +176,17 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
 
 export function closePlaybackWindow(displayId: string): void {
   const win = playbackWindows.get(displayId)
+  const previousState = playbackPresentationStates.get(displayId)
   if (win && !win.isDestroyed()) {
+    if (previousState) {
+      win.hide()
+      exitPlaybackPresentationMode(win, previousState)
+    }
     win.removeAllListeners('close')
     win.close()
   }
   playbackWindows.delete(displayId)
+  playbackPresentationStates.delete(displayId)
 
   // Stop power save blocker when all playback windows are closed
   if (playbackWindows.size === 0 && powerSaveBlockerId !== null) {
@@ -193,8 +236,13 @@ export function electronDisplayToInfo(
     height: display.size.height,
     x: display.bounds.x,
     y: display.bounds.y,
+    workAreaX: display.workArea.x,
+    workAreaY: display.workArea.y,
+    workAreaWidth: display.workArea.width,
+    workAreaHeight: display.workArea.height,
     isPrimary: display.id === primaryDisplay.id,
     scaleFactor: display.scaleFactor,
     internal: display.internal ?? false,
+    rotation: display.rotation,
   }
 }

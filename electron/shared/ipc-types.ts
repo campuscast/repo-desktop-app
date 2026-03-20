@@ -16,6 +16,7 @@ export interface AppConfig {
   mqttBrokerUrl: string
   activationState: ActivationState
   selectedDisplayIds: string[]
+  selectedDisplayBindings: PersistedDisplayBinding[]
   lastSyncAt: string | null
   zoneId: string | null
   groupId: string | null
@@ -34,6 +35,19 @@ export interface AppConfig {
 export interface AutoLaunchSettings {
   enabled: boolean
   supported: boolean
+}
+
+export interface CacheInfo {
+  content_dir: string
+  media_files: number
+  total_bytes: number
+}
+
+export interface CacheClearResult {
+  media_files_removed: number
+  media_files_failed: number
+  bytes_reclaimed: number
+  browser_cache_cleared: boolean
 }
 
 export type ActivationState = 'unregistered' | 'pending' | 'activated'
@@ -64,9 +78,32 @@ export interface DisplayInfo {
   height: number
   x: number
   y: number
+  workAreaX: number
+  workAreaY: number
+  workAreaWidth: number
+  workAreaHeight: number
   isPrimary: boolean
   scaleFactor: number
   internal: boolean
+  rotation: number
+}
+
+export interface PersistedDisplayBinding {
+  id: string
+  label: string
+  isPrimary: boolean
+  width: number
+  height: number
+  x: number
+  y: number
+  workAreaX: number
+  workAreaY: number
+  workAreaWidth: number
+  workAreaHeight: number
+  scaleFactor: number
+  internal: boolean
+  rotation: number
+  capturedAt: string
 }
 
 export interface ConnectionStatus {
@@ -265,3 +302,9 @@ export interface DeviceRevalidateResponse {
 }
 
 export type WindowMode = 'control' | 'playback'
+export type PlaybackSessionState = 'stopped' | 'running'
+
+export interface PlaybackCommandResult {
+  allowed: boolean
+  reason: 'ok' | 'already-running' | 'already-stopped'
+}

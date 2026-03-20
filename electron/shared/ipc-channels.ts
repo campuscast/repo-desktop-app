@@ -7,6 +7,7 @@ export const IPC = {
   // Activation
   ACTIVATION_REQUEST_CODE: 'activation:request-code',
   ACTIVATION_POLL_CREDENTIALS: 'activation:poll-credentials',
+  ACTIVATION_INVALIDATED: 'activation:invalidated',
 
   // Display management
   DISPLAYS_GET: 'displays:get',
@@ -54,6 +55,11 @@ export const IPC = {
   SETTINGS_VALIDATE_SHORTCUT: 'settings:validate-shortcut',
   SETTINGS_GET_AUTOLAUNCH: 'settings:get-autolaunch',
   SETTINGS_SET_AUTOLAUNCH: 'settings:set-autolaunch',
+  SETTINGS_GET_CACHE_INFO: 'settings:get-cache-info',
+  SETTINGS_CLEAR_CACHE: 'settings:clear-cache',
+
+  // Startup instrumentation
+  STARTUP_TRACE: 'startup:trace',
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Activity,
   Wifi,
   WifiOff,
   Monitor,
@@ -26,6 +25,7 @@ import { useDisplays } from '@/hooks/use-displays'
 import { useLocale } from '@/hooks/use-locale'
 import { formatTime } from '@/lib/utils'
 import type { PlayerHealthSnapshot } from '../../../electron/shared/ipc-types'
+import { deriveEffectiveConnection } from '../../../electron/shared/connection-status'
 
 export function DiagnosticsScreen() {
   const config = useAppStore((s) => s.config)
@@ -34,20 +34,46 @@ export function DiagnosticsScreen() {
   const connectionStatus = useAppStore((s) => s.connectionStatus)
   const errors = useAppStore((s) => s.errors)
   const playbackState = usePlaybackStore((s) => s.state)
-  const { displays, selectedDisplayIds, startPlayback, stopPlayback } =
-    useDisplays()
+  const {
+    displays,
+    selectedDisplayIds,
+    startPlayback,
+    stopPlayback,
+    playbackSessionState,
+    startInFlight,
+    stopInFlight,
+  } = useDisplays()
   const [syncing, setSyncing] = useState(false)
   const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null)
   const { t } = useLocale()
 
-  const effectiveConnection =
-    connectionStatus.backend === 'connected' || connectionStatus.mqtt === 'connected'
-      ? 'connected'
-      : connectionStatus.backend === 'connecting' || connectionStatus.mqtt === 'connecting'
-        ? 'connecting'
-        : 'disconnected'
+  const effectiveConnection = deriveEffectiveConnection(connectionStatus)
+  const hasNoScheduledContent =
+    playbackSessionState === 'running'
+    && playbackState.status === 'idle'
+    && !playbackState.currentSlot
+  const playbackStatusLabel = startInFlight
+    ? t('diagnostics.starting')
+    : stopInFlight
+      ? t('diagnostics.stopping')
+      : hasNoScheduledContent
+        ? t('diagnostics.noScheduledContent')
+        : playbackState.status
+  const playbackBadgeVariant: 'success' | 'destructive' | 'warning' | 'secondary' =
+    startInFlight || stopInFlight
+      ? 'warning'
+      : playbackState.status === 'playing'
+        ? 'success'
+        : playbackState.status === 'error'
+          ? 'destructive'
+          : 'secondary'
+  const canStartPlayback =
+    !startInFlight && !stopInFlight && playbackSessionState === 'stopped'
+  const canStopPlayback =
+    !startInFlight && !stopInFlight && playbackSessionState === 'running'
 
   const handleSync = useCallback(async () => {
+    window.electronAPI.startupMark('renderer:diagnostics-sync:start')
     setSyncing(true)
     try {
       if (config?.activationState === 'activated') {
@@ -77,12 +103,14 @@ export function DiagnosticsScreen() {
       setConfig(updatedConfig)
       const nextHealth = await window.electronAPI.getHealthStatus()
       setHealth(nextHealth)
+      window.electronAPI.startupMark('renderer:diagnostics-sync:done')
     } catch (err) {
       useAppStore
         .getState()
         .addError(
           err instanceof Error ? err.message : 'Sync failed'
         )
+      window.electronAPI.startupMark('renderer:diagnostics-sync:failed')
     } finally {
       setSyncing(false)
     }
@@ -148,17 +176,8 @@ export function DiagnosticsScreen() {
             <Play className="h-5 w-5 text-primary" />
             <div>
               <p className="text-sm font-medium">{t('diagnostics.playback')}</p>
-              <Badge
-                variant={
-                  playbackState.status === 'playing'
-                    ? 'success'
-                    : playbackState.status === 'error'
-                      ? 'destructive'
-                      : 'secondary'
-                }
-                className="mt-1"
-              >
-                {playbackState.status}
+              <Badge variant={playbackBadgeVariant} className="mt-1">
+                {playbackStatusLabel}
               </Badge>
             </div>
           </CardContent>
@@ -191,11 +210,11 @@ export function DiagnosticsScreen() {
             </span>
             <span className="text-muted-foreground">{t('diagnostics.zone')}</span>
             <span className="font-mono text-xs">
-              {config?.zoneName ?? config?.zoneId ?? '—'}
+              {config?.zoneName ?? '—'}
             </span>
             <span className="text-muted-foreground">{t('diagnostics.group')}</span>
             <span className="font-mono text-xs">
-              {config?.groupName ?? config?.groupId ?? '—'}
+              {config?.groupName ?? '—'}
             </span>
             <span className="text-muted-foreground">{t('diagnostics.lastSync')}</span>
             <span className="text-xs">
@@ -232,7 +251,7 @@ export function DiagnosticsScreen() {
               {health?.current_release_id ?? playbackState.releaseId ?? '—'}
             </span>
             <span className="text-muted-foreground">Playback status</span>
-            <span>{health?.playback_status ?? playbackState.status}</span>
+            <span>{playbackStatusLabel}</span>
             <span className="text-muted-foreground">Cache assets</span>
             <span className="font-mono text-xs">
               {health ? `${health.cache.available_assets}/${health.cache.total_assets}` : '—'}
@@ -292,13 +311,18 @@ export function DiagnosticsScreen() {
           <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
           {t('diagnostics.syncNow')}
         </Button>
-        <Button onClick={startPlayback} size="sm">
+        <Button onClick={startPlayback} size="sm" disabled={!canStartPlayback}>
           <Play className="mr-1.5 h-3.5 w-3.5" />
-          {t('diagnostics.startPlayback')}
+          {startInFlight ? t('diagnostics.starting') : t('diagnostics.startPlayback')}
         </Button>
-        <Button onClick={stopPlayback} variant="secondary" size="sm">
+        <Button
+          onClick={stopPlayback}
+          variant="secondary"
+          size="sm"
+          disabled={!canStopPlayback}
+        >
           <Power className="mr-1.5 h-3.5 w-3.5" />
-          {t('diagnostics.stop')}
+          {stopInFlight ? t('diagnostics.stopping') : t('diagnostics.stop')}
         </Button>
       </div>
 

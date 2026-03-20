@@ -1,4 +1,4 @@
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, session, BrowserWindow } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type {
   AppConfig,
@@ -11,7 +11,14 @@ import type {
   ReleaseManifest,
 } from '../shared/ipc-types'
 import { persistence } from './services/persistence'
-import { backendClient } from './services/backend-client'
+import {
+  backendClient,
+  isBackendHttpErrorWithStatus,
+} from './services/backend-client'
+import {
+  invalidationStatusesFor,
+  type ProvisioningInvalidationContext,
+} from './services/provisioning-invalidation-policy'
 import { mqttService } from './services/mqtt-client'
 import { contentCacheService } from './services/content-cache'
 import { heartbeatService } from './services/heartbeat'
@@ -19,7 +26,12 @@ import { getDisplays } from './display-manager'
 import {
   openPlaybackWindows,
   closeAllPlaybackWindows,
+  getPlaybackWindows,
 } from './windows'
+import {
+  deriveDisplayBindings,
+  resolveDisplaysForPlayback,
+} from './display-bindings'
 import {
   updateExitShortcut,
   validateAccelerator,
@@ -29,6 +41,12 @@ import {
   getAutoLaunchSettings,
   setAutoLaunchEnabled,
 } from './services/auto-launch'
+import { buildCacheStatusAfterManualClear } from './services/cache-cleanup-policy'
+import { decideReleaseFetchPolicy } from './services/release-fetch-policy'
+import {
+  decidePlaybackOpen,
+  decidePlaybackClose,
+} from './services/playback-control-policy'
 
 export function registerIpcHandlers(): void {
   function resetActivationState(): AppConfig {
@@ -52,6 +70,36 @@ export function registerIpcHandlers(): void {
     heartbeatService.stop()
     return persistence.getConfig()
   }
+
+  function broadcastActivationInvalidated(reason: string): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IPC.ACTIVATION_INVALIDATED, reason)
+      }
+    }
+  }
+
+  function handleProvisioningInvalidation(reason: string): AppConfig {
+    const updated = resetActivationState()
+    closeAllPlaybackWindows()
+    mqttService.setBackendStatus('disconnected', reason)
+    broadcastActivationInvalidated(reason)
+    return updated
+  }
+
+  function isFatalProvisioningError(
+    error: unknown,
+    context: ProvisioningInvalidationContext
+  ): boolean {
+    return isBackendHttpErrorWithStatus(
+      error,
+      invalidationStatusesFor(context)
+    )
+  }
+
+  heartbeatService.setProvisioningInvalidationHandler((reason) => {
+    handleProvisioningInvalidation(reason)
+  })
 
   function isManifestUsable(manifest: ReleaseManifest | null): manifest is ReleaseManifest {
     if (!manifest) return false
@@ -77,7 +125,20 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.CONFIG_SAVE, (_e, partial: Partial<AppConfig>) => {
-    persistence.saveConfig(partial)
+    let nextPartial: Partial<AppConfig> = partial
+    if (partial.selectedDisplayIds) {
+      const displays = getDisplays()
+      const bindings = deriveDisplayBindings(partial.selectedDisplayIds, displays)
+      nextPartial = {
+        ...partial,
+        selectedDisplayBindings: bindings,
+      }
+      console.info(
+        `[display-restore] Updated persisted display bindings from config save: ${bindings.length}`
+      )
+    }
+
+    persistence.saveConfig(nextPartial)
     // Update heartbeat config if relevant fields changed
     const updated = persistence.getConfig()
     if (updated.activationState === 'activated' && updated.deviceToken) {
@@ -127,6 +188,7 @@ export function registerIpcHandlers(): void {
         // Start heartbeat
         const updatedConfig = persistence.getConfig()
         heartbeatService.start(updatedConfig)
+        mqttService.setBackendStatus('connecting', null)
 
         // Auto-connect MQTT
         if (creds.mqtt_client_id && updatedConfig.mqttBrokerUrl) {
@@ -154,28 +216,57 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.DISPLAYS_SET_SELECTED, (_e, ids: string[]) => {
-    persistence.saveConfig({ selectedDisplayIds: ids })
+    const displays = getDisplays()
+    const bindings = deriveDisplayBindings(ids, displays)
+    persistence.saveConfig({
+      selectedDisplayIds: ids,
+      selectedDisplayBindings: bindings,
+    })
+    console.info(
+      `[display-restore] Saved selected displays: ids=${ids.join(', ') || 'none'}, bindings=${bindings.length}`
+    )
   })
 
   // ─── Playback Windows ──────────────────────────────────────────────
 
   ipcMain.handle(IPC.PLAYBACK_OPEN, () => {
+    const openDecision = decidePlaybackOpen(getPlaybackWindows().size)
+    if (!openDecision.allowed) {
+      return openDecision
+    }
+
     const config = persistence.getConfig()
     const allDisplays = getDisplays()
-    const selected = allDisplays.filter((d) =>
-      config.selectedDisplayIds.includes(d.id)
-    )
-    if (selected.length === 0 && allDisplays.length > 0) {
-      // Fallback: use primary display
-      const primary = allDisplays.find((d) => d.isPrimary) ?? allDisplays[0]
-      openPlaybackWindows([primary])
-    } else {
-      openPlaybackWindows(selected)
+    const resolved = resolveDisplaysForPlayback(config, allDisplays)
+    for (const line of resolved.diagnostics) {
+      console.info(line)
     }
+    if (resolved.usedFallback) {
+      console.warn('[display-restore] Playback opened with fallback display selection')
+    } else if (resolved.selectedDisplays.length > 0) {
+      const resolvedIds = resolved.selectedDisplays.map((display) => display.id)
+      if (!sameIdOrder(config.selectedDisplayIds, resolvedIds)) {
+        const bindings = deriveDisplayBindings(resolvedIds, allDisplays)
+        persistence.saveConfig({
+          selectedDisplayIds: resolvedIds,
+          selectedDisplayBindings: bindings,
+        })
+        console.info(
+          `[display-restore] Persisted remapped display ids after playback open: ${resolvedIds.join(', ')}`
+        )
+      }
+    }
+    openPlaybackWindows(resolved.selectedDisplays)
+    return openDecision
   })
 
   ipcMain.handle(IPC.PLAYBACK_CLOSE, () => {
+    const closeDecision = decidePlaybackClose(getPlaybackWindows().size)
+    if (!closeDecision.allowed) {
+      return closeDecision
+    }
     closeAllPlaybackWindows()
+    return closeDecision
   })
 
   // ─── Backend Communication ──────────────────────────────────────────
@@ -193,36 +284,29 @@ export function registerIpcHandlers(): void {
       }
 
       mqttService.setBackendStatus('connecting', null)
-      const existence = await backendClient.checkDeviceExists(
+      const verification = await backendClient.verifyActivatedDevice(
         config.apiBaseUrl,
+        config.deviceToken,
         config.deviceId
       )
 
-      if (existence === 'missing') {
-        const updated = resetActivationState()
-        mqttService.setBackendStatus('disconnected', 'Device was removed from CMS')
+      if (verification.status === 'missing') {
+        const updated = handleProvisioningInvalidation(
+          'Device provisioning is no longer valid in CMS'
+        )
         return { status: 'missing', config: updated }
       }
 
-      if (existence === 'exists') {
+      if (verification.status === 'exists') {
+        const info = verification.info
         mqttService.setBackendStatus('connected', null)
-
-        // Refresh zone/group names from backend
-        try {
-          const info = await backendClient.fetchDeviceInfo(
-            config.apiBaseUrl,
-            config.deviceToken,
-            config.deviceId
-          )
-          persistence.saveConfig({
-            zoneName: info.zone_name || null,
-            groupName: info.group_name || null,
-            zoneId: info.zone_id || null,
-            groupId: info.group_id || null,
-          })
-        } catch {
-          // Non-fatal: zone/group refresh is best-effort
-        }
+        persistence.saveConfig({
+          deviceName: info.device_name || null,
+          zoneName: info.zone_name || null,
+          groupName: info.group_name || null,
+          zoneId: info.zone_id || null,
+          groupId: info.group_id || null,
+        })
 
         const updated = persistence.getConfig()
         return { status: 'exists', config: updated }
@@ -248,13 +332,19 @@ export function registerIpcHandlers(): void {
           config.deviceId
         )
         persistence.saveConfig({
+          deviceName: info.device_name || null,
           zoneName: info.zone_name || null,
           groupName: info.group_name || null,
           zoneId: info.zone_id || null,
           groupId: info.group_id || null,
         })
         return info
-      } catch {
+      } catch (err) {
+        if (isFatalProvisioningError(err, 'device-info')) {
+          handleProvisioningInvalidation(
+            'Device provisioning is no longer valid in CMS'
+          )
+        }
         return null
       }
     }
@@ -272,40 +362,33 @@ export function registerIpcHandlers(): void {
         config.deviceId
       )
       if (release) {
-        mqttService.setBackendStatus('connected', null)
+        const policy = decideReleaseFetchPolicy({ scenario: 'release-available' })
+        mqttService.setBackendStatus(policy.backendStatus, policy.lastError)
         return release
       }
 
-      const fallback = getLastKnownGoodManifest(
-        'No active release from backend'
-      )
-      if (fallback) {
-        mqttService.setBackendStatus(
-          'disconnected',
-          'Backend has no active release; using cached release'
-        )
-        const syntheticRelease: Release = {
-          release_id: fallback.release_id,
-          schedule_id: fallback.schedule_id,
-          version_number: fallback.version_number,
-          zone_id: fallback.zone_id,
-          manifest_url: '',
-          manifest_signature: 'cached',
-          manifest_key_id: 'cached',
-          status: 'active',
-          published_at: fallback.created_at,
-        }
-        return syntheticRelease
-      }
-
-      mqttService.setBackendStatus('disconnected', 'No active release available')
+      const policy = decideReleaseFetchPolicy({ scenario: 'no-active-release' })
+      mqttService.setBackendStatus(policy.backendStatus, policy.lastError)
       return null
     } catch (err) {
+      if (isFatalProvisioningError(err, 'release')) {
+        handleProvisioningInvalidation(
+          'Device provisioning is no longer valid in CMS'
+        )
+        return null
+      }
+
       const message = err instanceof Error ? err.message : 'Backend unreachable'
-      const fallback = getLastKnownGoodManifest(message)
+      const policy = decideReleaseFetchPolicy({
+        scenario: 'network-error',
+        errorMessage: message,
+      })
+      const fallback = policy.shouldUseFallbackManifest
+        ? getLastKnownGoodManifest(message)
+        : null
       if (fallback) {
         mqttService.setBackendStatus(
-          'disconnected',
+          policy.backendStatus,
           `Backend unavailable; using cached release (${message})`
         )
         const syntheticRelease: Release = {
@@ -322,7 +405,7 @@ export function registerIpcHandlers(): void {
         return syntheticRelease
       }
 
-      mqttService.setBackendStatus('disconnected', message)
+      mqttService.setBackendStatus(policy.backendStatus, policy.lastError)
       return null
     }
   })
@@ -403,6 +486,13 @@ export function registerIpcHandlers(): void {
       )
       return manifest
     } catch (err) {
+      if (isFatalProvisioningError(err, 'manifest')) {
+        handleProvisioningInvalidation(
+          'Device provisioning is no longer valid in CMS'
+        )
+        throw new Error('Device provisioning is no longer valid')
+      }
+
       const message = err instanceof Error ? err.message : 'Backend unreachable'
       const fallback = getLastKnownGoodManifest(message)
       if (fallback) {
@@ -465,6 +555,12 @@ export function registerIpcHandlers(): void {
         )
         mqttService.setBackendStatus('connected', null)
       } catch (err) {
+        if (isFatalProvisioningError(err, 'telemetry')) {
+          handleProvisioningInvalidation(
+            'Device provisioning is no longer valid in CMS'
+          )
+          throw new Error('Device provisioning is no longer valid')
+        }
         const message = err instanceof Error ? err.message : 'Backend unreachable'
         mqttService.setBackendStatus('disconnected', message)
         throw err
@@ -504,6 +600,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.CONNECTION_STATUS, () => {
     return mqttService.getStatus()
+  })
+
+  ipcMain.handle(IPC.PLAYBACK_STATE, () => {
+    return getPlaybackWindows().size > 0 ? 'running' : 'stopped'
   })
 
   ipcMain.handle(IPC.MQTT_CONNECT, async (_e, config: MqttConfig) => {
@@ -580,4 +680,51 @@ export function registerIpcHandlers(): void {
     persistence.saveConfig({ autoLaunchEnabled: status.enabled })
     return status
   })
+
+  ipcMain.handle(IPC.SETTINGS_GET_CACHE_INFO, () => {
+    return contentCacheService.getCacheInfo()
+  })
+
+  ipcMain.handle(IPC.SETTINGS_CLEAR_CACHE, async () => {
+    const mediaResult = contentCacheService.clearMediaCache()
+    let browserCacheCleared = false
+
+    try {
+      await session.defaultSession.clearCache()
+      browserCacheCleared = true
+    } catch (err) {
+      console.warn('[cache] Failed to clear browser cache:', err)
+    }
+
+    const manifest = persistence.getLastManifest()
+    const verified = isManifestUsable(manifest)
+      ? contentCacheService.verifyManifestAssets(manifest)
+      : {
+        total: 0,
+        available: 0,
+        missing: 0,
+      }
+
+    persistence.saveCacheStatus(
+      buildCacheStatusAfterManualClear(
+        isManifestUsable(manifest) ? manifest : null,
+        verified,
+        new Date().toISOString(),
+        mediaResult.media_files_failed
+      )
+    )
+
+    return {
+      ...mediaResult,
+      browser_cache_cleared: browserCacheCleared,
+    }
+  })
+}
+
+function sameIdOrder(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
 }

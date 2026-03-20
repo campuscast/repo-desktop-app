@@ -1,6 +1,10 @@
-import { app, BrowserWindow, Menu, globalShortcut } from 'electron'
+import { app, BrowserWindow, Menu, globalShortcut, ipcMain } from 'electron'
 import { createControlWindow, openPlaybackWindows } from './windows'
-import { initDisplayManager, getDisplays } from './display-manager'
+import {
+  initDisplayManager,
+  getDisplays,
+  waitForDisplayStability,
+} from './display-manager'
 import { registerIpcHandlers } from './ipc-handlers'
 import { persistence } from './services/persistence'
 import { heartbeatService } from './services/heartbeat'
@@ -12,9 +16,20 @@ import {
   isLaunchedViaAutoLaunch,
 } from './services/auto-launch'
 import type { AppConfig, ReleaseManifest } from '../shared/ipc-types'
+import { IPC } from '../shared/ipc-channels'
+import {
+  deriveDisplayBindings,
+  resolveDisplaysForPlayback,
+} from './display-bindings'
+import { startupMark } from './startup-trace'
+
+const STARTUP_DEVICE_REVALIDATE_TIMEOUT_MS = 2500
+
+startupMark('main:module-evaluated')
 
 // Prevent multiple instances
 const gotLock = app.requestSingleInstanceLock()
+startupMark('main:single-instance-lock', { gotLock })
 if (!gotLock) {
   app.quit()
 }
@@ -27,20 +42,38 @@ function isManifestUsable(manifest: ReleaseManifest | null): manifest is Release
 }
 
 function openPlaybackUsingSavedDisplays(config: AppConfig): void {
-  const allDisplays = getDisplays()
-  const selected = allDisplays.filter((d) =>
-    config.selectedDisplayIds.includes(d.id)
-  )
-
-  if (selected.length > 0) {
-    openPlaybackWindows(selected)
-    return
+  const displays = getDisplays()
+  const resolved = resolveDisplaysForPlayback(config, displays)
+  for (const line of resolved.diagnostics) {
+    console.info(line)
   }
-
-  const primary = allDisplays.find((d) => d.isPrimary) ?? allDisplays[0]
-  if (primary) {
-    openPlaybackWindows([primary])
+  if (resolved.usedFallback) {
+    console.warn('[display-restore] Autostart playback used fallback display selection')
   }
+  if (!resolved.usedFallback && resolved.selectedDisplays.length > 0) {
+    const resolvedIds = resolved.selectedDisplays.map((display) => display.id)
+    if (!sameIdOrder(config.selectedDisplayIds, resolvedIds)) {
+      const bindings = deriveDisplayBindings(resolvedIds, displays)
+      persistence.saveConfig({
+        selectedDisplayIds: resolvedIds,
+        selectedDisplayBindings: bindings,
+      })
+      console.info(
+        `[display-restore] Persisted remapped display ids after autostart restore: ${resolvedIds.join(', ')}`
+      )
+    }
+  }
+  if (resolved.selectedDisplays.length > 0) {
+    openPlaybackWindows(resolved.selectedDisplays)
+  }
+}
+
+function sameIdOrder(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
 }
 
 async function syncScheduleOnAutoLaunch(config: AppConfig): Promise<void> {
@@ -99,13 +132,80 @@ async function syncScheduleOnAutoLaunch(config: AppConfig): Promise<void> {
   }
 }
 
+function resetActivationState(): void {
+  persistence.saveConfig({
+    deviceId: null,
+    deviceName: null,
+    deviceToken: null,
+    mqttClientId: null,
+    mqttTopicPrefix: null,
+    tokenExpiresAt: null,
+    activationState: 'unregistered',
+    lastSyncAt: null,
+    zoneId: null,
+    groupId: null,
+    zoneName: null,
+    groupName: null,
+    pendingActivationCode: null,
+    pendingActivationRequestedAt: null,
+  })
+  mqttService.disconnect()
+  heartbeatService.stop()
+}
+
+async function revalidatePersistedActivation(config: AppConfig): Promise<AppConfig> {
+  if (
+    config.activationState !== 'activated'
+    || !config.deviceId
+    || !config.deviceToken
+  ) {
+    return config
+  }
+
+  startupMark('main:device-revalidate:start', {
+    timeoutMs: STARTUP_DEVICE_REVALIDATE_TIMEOUT_MS,
+  })
+
+  const verification = await backendClient.verifyActivatedDevice(
+    config.apiBaseUrl,
+    config.deviceToken,
+    config.deviceId,
+    STARTUP_DEVICE_REVALIDATE_TIMEOUT_MS
+  )
+  startupMark('main:device-revalidate:done', { status: verification.status })
+
+  if (verification.status === 'missing') {
+    resetActivationState()
+    console.warn('[startup] Persisted device is missing in CMS. Activation was reset.')
+  } else if (verification.status === 'exists') {
+    persistence.saveConfig({
+      deviceName: verification.info.device_name || null,
+      zoneName: verification.info.zone_name || null,
+      groupName: verification.info.group_name || null,
+      zoneId: verification.info.zone_id || null,
+      groupId: verification.info.group_id || null,
+    })
+  } else {
+    console.warn(
+      '[startup] Could not verify device existence in CMS; keeping current activation state.'
+    )
+  }
+
+  return persistence.getConfig()
+}
+
 app.whenReady().then(async () => {
+  startupMark('main:when-ready')
+
   // Initialize persistence (load config from disk)
+  startupMark('main:persistence-init:start')
   await persistence.init()
+  startupMark('main:persistence-init:end')
   const autoLaunchStatus = getAutoLaunchSettings()
   if (autoLaunchStatus.supported) {
     persistence.saveConfig({ autoLaunchEnabled: autoLaunchStatus.enabled })
   }
+  startupMark('main:auto-launch-settings-loaded', autoLaunchStatus)
 
   // Minimal menu: keep Edit roles so clipboard shortcuts (Cmd+V etc.) work on macOS
   if (process.platform === 'darwin') {
@@ -139,54 +239,49 @@ app.whenReady().then(async () => {
 
   // Register all IPC handlers before creating windows
   registerIpcHandlers()
-
-  // Revalidate persisted activation: uninstall/reinstall can keep stale local credentials.
-  const persistedConfig = persistence.getConfig()
-  if (persistedConfig.activationState === 'activated' && persistedConfig.deviceId) {
-    const existence = await backendClient.checkDeviceExists(
-      persistedConfig.apiBaseUrl,
-      persistedConfig.deviceId
-    )
-
-    if (existence === 'missing') {
-      persistence.saveConfig({
-        deviceId: null,
-        deviceName: null,
-        deviceToken: null,
-        mqttClientId: null,
-        mqttTopicPrefix: null,
-        tokenExpiresAt: null,
-        activationState: 'unregistered',
-        lastSyncAt: null,
-        zoneId: null,
-        groupId: null,
-        zoneName: null,
-        groupName: null,
-        pendingActivationCode: null,
-        pendingActivationRequestedAt: null,
-      })
-      mqttService.disconnect()
-      heartbeatService.stop()
-      console.warn(
-        '[startup] Persisted device is missing in CMS. Activation was reset.'
-      )
-    } else if (existence === 'unknown') {
-      console.warn(
-        '[startup] Could not verify device existence in CMS; keeping current activation state.'
-      )
+  startupMark('main:ipc-handlers-registered')
+  ipcMain.on(IPC.STARTUP_TRACE, (_event, payload: unknown) => {
+    if (!payload || typeof payload !== 'object') {
+      startupMark('renderer:startup-trace', 'invalid payload')
+      return
     }
-  }
+    const trace = payload as {
+      stage?: string
+      details?: string
+      timestamp?: number
+    }
+    const stage = trace.stage ?? 'unknown-stage'
+    const details: Record<string, unknown> = {}
+    if (trace.details) {
+      details.details = trace.details
+    }
+    if (typeof trace.timestamp === 'number') {
+      details.ipcLagMs = Math.max(0, Date.now() - trace.timestamp)
+    }
+    startupMark(stage, Object.keys(details).length > 0 ? details : undefined)
+  })
+  startupMark('main:startup-trace-listener-registered')
 
-  // Create the main control window
+  // Create and show the control window as early as possible.
   const controlWindow = createControlWindow()
+  startupMark('main:control-window-created')
 
   // Initialize display manager (monitors connected displays)
   initDisplayManager(controlWindow)
+  startupMark('main:display-manager-initialized')
+
+  // Revalidate persisted activation after first window creation so
+  // network latency cannot block initial app visibility.
+  const config = await revalidatePersistedActivation(persistence.getConfig())
+  startupMark('main:startup-config-ready', {
+    activationState: config.activationState,
+  })
 
   // Start heartbeat and auto-connect MQTT if already activated
-  const config = persistence.getConfig()
   if (config.activationState === 'activated' && config.deviceToken && config.deviceId) {
+    mqttService.setBackendStatus('connecting', null)
     heartbeatService.start(config)
+    startupMark('main:heartbeat-started')
 
     // Auto-reconnect MQTT on startup
     if (config.mqttClientId && config.mqttBrokerUrl) {
@@ -200,18 +295,34 @@ app.whenReady().then(async () => {
         .catch((err) => {
           console.warn('[startup] MQTT auto-connect failed:', err)
         })
+      startupMark('main:mqtt-autoconnect-requested')
     }
   }
 
+  const launchedViaAutoLaunch = isLaunchedViaAutoLaunch()
+
   if (
-    isLaunchedViaAutoLaunch()
-    && config.autoLaunchEnabled
+    launchedViaAutoLaunch
     && config.activationState === 'activated'
     && config.deviceToken
     && config.deviceId
   ) {
     void syncScheduleOnAutoLaunch(config)
-    openPlaybackUsingSavedDisplays(config)
+    console.info('[autostart] Waiting for display configuration stabilization before restore')
+    startupMark('main:autostart-display-stabilization-wait')
+    void waitForDisplayStability()
+      .then((displays) => {
+        console.info(
+          `[autostart] Display configuration stabilized (${displays.length} display(s))`
+        )
+        startupMark('main:autostart-displays-stable', { displays: displays.length })
+        openPlaybackUsingSavedDisplays(config)
+      })
+      .catch((err) => {
+        console.warn('[autostart] Display stabilization failed, restoring immediately:', err)
+        startupMark('main:autostart-displays-stable-failed')
+        openPlaybackUsingSavedDisplays(config)
+      })
   }
 
   // macOS: re-create window when dock icon clicked

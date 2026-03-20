@@ -19,6 +19,7 @@ const DEFAULT_CONFIG: AppConfig = {
   mqttBrokerUrl: 'mqtt://localhost:1883',
   activationState: 'unregistered',
   selectedDisplayIds: [],
+  selectedDisplayBindings: [],
   lastSyncAt: null,
   zoneId: null,
   groupId: null,

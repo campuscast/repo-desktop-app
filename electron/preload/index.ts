@@ -12,11 +12,14 @@ import type {
   ReleaseManifest,
   TelemetryPayload,
   MqttConfig,
-  PlaybackState,
+  PlaybackCommandResult,
+  PlaybackSessionState,
   WindowMode,
   DeviceRevalidateResponse,
   PlayerHealthSnapshot,
   AutoLaunchSettings,
+  CacheInfo,
+  CacheClearResult,
 } from '../shared/ipc-types'
 
 export interface ElectronAPI {
@@ -37,8 +40,9 @@ export interface ElectronAPI {
   setSelectedDisplays(ids: string[]): Promise<void>
 
   // Playback windows
-  openPlaybackWindows(): Promise<void>
-  closePlaybackWindows(): Promise<void>
+  openPlaybackWindows(): Promise<PlaybackCommandResult>
+  closePlaybackWindows(): Promise<PlaybackCommandResult>
+  getPlaybackSessionState(): Promise<PlaybackSessionState>
 
   // Backend
   fetchRelease(): Promise<Release | null>
@@ -70,6 +74,9 @@ export interface ElectronAPI {
   validateShortcut(accelerator: string): Promise<{ valid: boolean; reason?: string; available?: boolean }>
   getAutoLaunchSettings(): Promise<AutoLaunchSettings>
   setAutoLaunchEnabled(enabled: boolean): Promise<AutoLaunchSettings>
+  getCacheInfo(): Promise<CacheInfo>
+  clearCache(): Promise<CacheClearResult>
+  startupMark(stage: string, details?: string): void
 
   // Events (main → renderer)
   onDisplaysChanged(cb: (displays: DisplayInfo[]) => void): () => void
@@ -78,6 +85,7 @@ export interface ElectronAPI {
   onPlaybackScheduleUpdate(
     cb: (manifest: ReleaseManifest) => void
   ): () => void
+  onActivationInvalidated(cb: (reason: string) => void): () => void
 }
 
 const api: ElectronAPI = {
@@ -100,6 +108,7 @@ const api: ElectronAPI = {
   // Playback windows
   openPlaybackWindows: () => ipcRenderer.invoke(IPC.PLAYBACK_OPEN),
   closePlaybackWindows: () => ipcRenderer.invoke(IPC.PLAYBACK_CLOSE),
+  getPlaybackSessionState: () => ipcRenderer.invoke(IPC.PLAYBACK_STATE),
 
   // Backend
   fetchRelease: () => ipcRenderer.invoke(IPC.BACKEND_FETCH_RELEASE),
@@ -135,6 +144,9 @@ const api: ElectronAPI = {
   validateShortcut: (accelerator) => ipcRenderer.invoke(IPC.SETTINGS_VALIDATE_SHORTCUT, accelerator),
   getAutoLaunchSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET_AUTOLAUNCH),
   setAutoLaunchEnabled: (enabled) => ipcRenderer.invoke(IPC.SETTINGS_SET_AUTOLAUNCH, enabled),
+  getCacheInfo: () => ipcRenderer.invoke(IPC.SETTINGS_GET_CACHE_INFO),
+  clearCache: () => ipcRenderer.invoke(IPC.SETTINGS_CLEAR_CACHE),
+  startupMark: (stage, details) => ipcRenderer.send(IPC.STARTUP_TRACE, { stage, details }),
 
   // Events — return cleanup function
   onDisplaysChanged: (cb) => {
@@ -172,6 +184,23 @@ const api: ElectronAPI = {
     return () =>
       ipcRenderer.removeListener(IPC.PLAYBACK_SCHEDULE_UPDATE, handler)
   },
+
+  onActivationInvalidated: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, reason: string) => cb(reason)
+    ipcRenderer.on(IPC.ACTIVATION_INVALIDATED, handler)
+    return () => ipcRenderer.removeListener(IPC.ACTIVATION_INVALIDATED, handler)
+  },
 }
+
+ipcRenderer.send(IPC.STARTUP_TRACE, {
+  stage: 'preload:script-evaluated',
+  timestamp: Date.now(),
+})
+process.nextTick(() => {
+  ipcRenderer.send(IPC.STARTUP_TRACE, {
+    stage: 'preload:next-tick',
+    timestamp: Date.now(),
+  })
+})
 
 contextBridge.exposeInMainWorld('electronAPI', api)

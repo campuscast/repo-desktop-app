@@ -19,19 +19,25 @@ export function PlaybackScreen({ displayId }: PlaybackScreenProps) {
 
   // Load manifest on mount (from main process cache)
   useEffect(() => {
+    window.electronAPI.startupMark('renderer:playback-bootstrap:start', `display=${displayId ?? 'unknown'}`)
     async function loadManifest() {
       try {
         const release = await window.electronAPI.fetchRelease()
         if (release) {
           const m = await window.electronAPI.fetchManifest(release.release_id)
           setManifest(m)
+          window.electronAPI.startupMark(
+            'renderer:playback-bootstrap:manifest-loaded',
+            `release=${release.release_id}`
+          )
         }
       } catch {
         // Use cached manifest if available
+        window.electronAPI.startupMark('renderer:playback-bootstrap:fallback')
       }
     }
     loadManifest()
-  }, [setManifest])
+  }, [displayId, setManifest])
 
   // Schedule evaluation tick
   useEffect(() => {
@@ -56,6 +62,7 @@ export function PlaybackScreen({ displayId }: PlaybackScreenProps) {
       <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-black">
         <Monitor className="h-16 w-16 text-neutral-700" />
         <p className="text-lg text-neutral-600">CampusCast Player</p>
+        <p className="text-sm text-neutral-700">Nothing to play right now</p>
         {state.nextSlot && (
           <div className="flex items-center gap-2 text-sm text-neutral-700">
             <Clock className="h-4 w-4" />

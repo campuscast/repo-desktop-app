@@ -71,8 +71,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setSelectedDisplayIds: (ids) => set({ selectedDisplayIds: ids }),
 
   connectionStatus: {
-    backend: 'disconnected',
-    mqtt: 'disconnected',
+    backend: 'connecting',
+    mqtt: 'connecting',
     lastError: null,
   },
   setConnectionStatus: (status) => set({ connectionStatus: status }),
