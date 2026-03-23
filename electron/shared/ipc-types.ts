@@ -29,6 +29,8 @@ export interface AppConfig {
   exitShortcutAccelerator: string
   locale: Locale
   theme: Theme
+  /** Preferred IANA timezone (e.g. "Europe/Moscow") or "system". */
+  timeZone: string
   autoLaunchEnabled: boolean
 }
 
@@ -175,6 +177,8 @@ export interface PublicationSlidePayload {
   image_asset_id?: string
   logo_asset_id?: string
   layout?: 'centered' | 'split' | 'title-top'
+  image_fit?: 'cover' | 'contain' | 'stretch' | 'center'
+  text_overlay?: boolean
 }
 
 export interface PublicationVideoPayload {

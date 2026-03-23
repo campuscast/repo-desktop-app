@@ -4,6 +4,7 @@ import {
   Pencil,
   X,
   Globe,
+  Clock,
   Sun,
   Moon,
   Monitor,
@@ -109,6 +110,20 @@ const THEME_OPTIONS: Array<{ value: Theme; icon: React.ElementType; labelKey: st
   { value: 'system', icon: Monitor, labelKey: 'settings.themeSystem' },
 ]
 
+const SYSTEM_TIME_ZONE =
+  Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+const TIME_ZONE_OPTIONS = [
+  'UTC',
+  SYSTEM_TIME_ZONE,
+  'Europe/Moscow',
+  'Europe/London',
+  'Asia/Dubai',
+  'America/New_York',
+  'America/Chicago',
+  'America/Los_Angeles',
+].filter((value, index, self) => self.indexOf(value) === index)
+
 function formatBytes(value: number): string {
   if (value <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -135,6 +150,7 @@ export function SettingsScreen() {
   // URL state
   const [apiBaseUrl, setApiBaseUrl] = useState(config?.apiBaseUrl ?? '')
   const [mqttBrokerUrl, setMqttBrokerUrl] = useState(config?.mqttBrokerUrl ?? '')
+  const [timeZone, setTimeZone] = useState(config?.timeZone ?? 'system')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [autoLaunchEnabled, setAutoLaunchEnabled] = useState(
@@ -153,6 +169,7 @@ export function SettingsScreen() {
     if (config) {
       setApiBaseUrl(config.apiBaseUrl)
       setMqttBrokerUrl(config.mqttBrokerUrl)
+      setTimeZone(config.timeZone ?? 'system')
       setAutoLaunchEnabled(config.autoLaunchEnabled)
     }
   }, [config])
@@ -270,6 +287,7 @@ export function SettingsScreen() {
       const finalConfig = await window.electronAPI.saveConfig({
         apiBaseUrl: apiBaseUrl.trim(),
         mqttBrokerUrl: mqttBrokerUrl.trim(),
+        timeZone,
       })
       useAppStore.getState().setConfig(finalConfig)
       setSaved(true)
@@ -281,9 +299,10 @@ export function SettingsScreen() {
     }
   }
 
-  const hasUrlChanges =
+  const hasSettingsChanges =
     apiBaseUrl.trim() !== (config?.apiBaseUrl ?? '') ||
-    mqttBrokerUrl.trim() !== (config?.mqttBrokerUrl ?? '')
+    mqttBrokerUrl.trim() !== (config?.mqttBrokerUrl ?? '') ||
+    timeZone !== (config?.timeZone ?? 'system')
 
   async function handleAutoLaunchToggle(enabled: boolean) {
     setAutoLaunchSaving(true)
@@ -456,6 +475,36 @@ export function SettingsScreen() {
         </CardContent>
       </Card>
 
+      {/* Time zone */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Clock className="h-4 w-4" />
+            {t('settings.timeZone')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-3">
+            {t('settings.timeZoneDesc')}
+          </p>
+          <select
+            id="settings-time-zone"
+            value={timeZone}
+            onChange={(e) => setTimeZone(e.target.value)}
+            className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="system">
+              {t('settings.timeZoneSystem', { name: SYSTEM_TIME_ZONE })}
+            </option>
+            {TIME_ZONE_OPTIONS.map((zone) => (
+              <option key={zone} value={zone}>
+                {zone}
+              </option>
+            ))}
+          </select>
+        </CardContent>
+      </Card>
+
       {/* Auto Launch */}
       <Card>
         <CardHeader className="pb-3">
@@ -576,7 +625,7 @@ export function SettingsScreen() {
         <Button
           onClick={handleSave}
           size="sm"
-          disabled={saving || !hasUrlChanges}
+          disabled={saving || !hasSettingsChanges}
         >
           <Save className="mr-1.5 h-3.5 w-3.5" />
           {saving ? t('settings.saving') : saved ? t('settings.saved') : t('settings.saveSettings')}

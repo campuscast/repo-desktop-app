@@ -23,7 +23,7 @@ import { useAppStore } from '@/store/app-store'
 import { usePlaybackStore } from '@/store/playback-store'
 import { useDisplays } from '@/hooks/use-displays'
 import { useLocale } from '@/hooks/use-locale'
-import { formatTime } from '@/lib/utils'
+import { formatTime, formatErrorForDisplay } from '@/lib/utils'
 import type { PlayerHealthSnapshot } from '../../../electron/shared/ipc-types'
 import { deriveEffectiveConnection } from '../../../electron/shared/connection-status'
 
@@ -46,6 +46,7 @@ export function DiagnosticsScreen() {
   const [syncing, setSyncing] = useState(false)
   const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null)
   const { t } = useLocale()
+  const timeZone = config?.timeZone ?? 'system'
 
   const effectiveConnection = deriveEffectiveConnection(connectionStatus)
   const hasNoScheduledContent =
@@ -218,7 +219,7 @@ export function DiagnosticsScreen() {
             </span>
             <span className="text-muted-foreground">{t('diagnostics.lastSync')}</span>
             <span className="text-xs">
-              {formatTime(config?.lastSyncAt ?? null)}
+              {formatTime(config?.lastSyncAt ?? null, timeZone)}
             </span>
             <span className="text-muted-foreground">{t('diagnostics.apiUrl')}</span>
             <span className="truncate font-mono text-xs">
@@ -262,15 +263,15 @@ export function DiagnosticsScreen() {
             </span>
             <span className="text-muted-foreground">Heartbeat success</span>
             <span className="text-xs">
-              {formatTime(health?.heartbeat.last_success_at ?? null)}
+              {formatTime(health?.heartbeat.last_success_at ?? null, timeZone)}
             </span>
             <span className="text-muted-foreground">Heartbeat attempt</span>
             <span className="text-xs">
-              {formatTime(health?.heartbeat.last_attempt_at ?? null)}
+              {formatTime(health?.heartbeat.last_attempt_at ?? null, timeZone)}
             </span>
             <span className="text-muted-foreground">Last error</span>
             <span className="text-xs text-destructive/80">
-              {health?.last_error ?? '—'}
+              {formatErrorForDisplay(health?.last_error, timeZone)}
             </span>
           </div>
         </CardContent>
@@ -298,7 +299,7 @@ export function DiagnosticsScreen() {
               </span>
               <span className="text-muted-foreground">{t('diagnostics.ends')}</span>
               <span className="text-xs">
-                {formatTime(playbackState.currentSlot.end_time)}
+                {formatTime(playbackState.currentSlot.end_time, timeZone)}
               </span>
             </div>
           </CardContent>
@@ -338,9 +339,9 @@ export function DiagnosticsScreen() {
           <CardContent>
             <ScrollArea className="h-32">
               <div className="space-y-1">
-                {errors.map((err, i) => (
+                {[...errors].reverse().map((err, i) => (
                   <p key={i} className="font-mono text-xs text-destructive/80">
-                    {err}
+                    {formatErrorForDisplay(err, timeZone)}
                   </p>
                 ))}
               </div>

@@ -1,4 +1,5 @@
 import type { CacheStatus, ReleaseManifest } from '../../shared/ipc-types'
+import { withErrorTimestamp } from '../../shared/error-log'
 
 interface VerifiedAssetStats {
   total: number
@@ -20,7 +21,10 @@ export function buildCacheStatusAfterManualClear(
     last_cleanup_at: nowIso,
     last_error:
       failedDeletes > 0
-        ? `Failed to delete ${failedDeletes} cached file(s)`
+        ? withErrorTimestamp(
+          `Failed to delete ${failedDeletes} cached file(s)`,
+          new Date(nowIso)
+        )
         : null,
   }
 }

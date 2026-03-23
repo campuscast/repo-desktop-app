@@ -14,6 +14,23 @@ import type {
   ReleaseManifest,
 } from '../../shared/ipc-types'
 
+export function isPresignedDownloadUrl(url: string): boolean {
+  try {
+    const params = new URL(url).searchParams
+    const keys = new Set(
+      Array.from(params.keys(), (key) => key.toLowerCase())
+    )
+    const hasV4Presign =
+      keys.has('x-amz-signature') || keys.has('x-amz-algorithm')
+    const hasV2Presign =
+      keys.has('signature') && keys.has('awsaccesskeyid')
+
+    return hasV4Presign || hasV2Presign
+  } catch {
+    return false
+  }
+}
+
 class ContentCacheService {
   private resolveLocalPath(
     assetId: string,
@@ -41,12 +58,15 @@ class ContentCacheService {
     }
 
     return new Promise<string>((resolve, reject) => {
+      const headers: Record<string, string> = {}
+      if (!isPresignedDownloadUrl(url)) {
+        headers.Authorization = `Bearer ${deviceToken}`
+      }
+
       const request = net.request({
         method: 'GET',
         url,
-        headers: {
-          Authorization: `Bearer ${deviceToken}`,
-        },
+        headers,
       })
 
       request.on('response', (response) => {

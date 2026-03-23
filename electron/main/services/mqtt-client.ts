@@ -7,6 +7,7 @@ import type {
   ConnectionStatus,
   ReleaseNotification,
 } from '../../shared/ipc-types'
+import { withErrorTimestamp } from '../../shared/error-log'
 
 class MqttService {
   private client: MqttClient | null = null
@@ -27,7 +28,8 @@ class MqttService {
   ): void {
     const partial: Partial<ConnectionStatus> = { backend: status }
     if (lastError !== undefined) {
-      partial.lastError = lastError
+      partial.lastError =
+        lastError === null ? null : withErrorTimestamp(lastError)
     }
     this.updateStatus(partial)
   }
@@ -60,7 +62,7 @@ class MqttService {
       this.client.on('error', (err) => {
         this.updateStatus({
           mqtt: 'disconnected',
-          lastError: err.message,
+          lastError: withErrorTimestamp(err.message),
         })
       })
 
@@ -73,7 +75,10 @@ class MqttService {
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown MQTT error'
-      this.updateStatus({ mqtt: 'disconnected', lastError: msg })
+      this.updateStatus({
+        mqtt: 'disconnected',
+        lastError: withErrorTimestamp(msg),
+      })
     }
   }
 

@@ -5,6 +5,7 @@ import type {
   ConnectionStatus,
   ActivationState,
 } from '../../electron/shared/ipc-types'
+import { withErrorTimestamp } from '../../electron/shared/error-log'
 
 export type AppScreen =
   | 'boot'
@@ -85,7 +86,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   errors: [],
   addError: (error) =>
     set((state) => ({
-      errors: [...state.errors.slice(-49), error], // keep last 50
+      errors: [...state.errors.slice(-49), withErrorTimestamp(error)], // keep last 50
     })),
   clearErrors: () => set({ errors: [] }),
 

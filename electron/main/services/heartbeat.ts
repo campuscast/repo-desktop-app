@@ -1,4 +1,4 @@
-import { net } from 'electron'
+import { desktopCapturer, net } from 'electron'
 import type {
   AppConfig,
   HeartbeatStatus,
@@ -8,6 +8,7 @@ import { getDisplays } from '../display-manager'
 import { persistence } from './persistence'
 import { mqttService } from './mqtt-client'
 import { isProvisioningInvalidationStatus } from './provisioning-invalidation-policy'
+import { withErrorTimestamp } from '../../shared/error-log'
 
 const HEARTBEAT_INTERVAL_MS = 30_000 // 30 seconds
 
@@ -21,6 +22,79 @@ class HeartbeatService {
     last_attempt_at: null,
     last_success_at: null,
     last_error: null,
+  }
+
+  private async capturePreviewPayload(): Promise<{
+    image_base64?: string
+    mime_type: string
+    captured_at: string
+    width?: number
+    height?: number
+    status: string
+  }> {
+    const capturedAt = new Date().toISOString()
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 640, height: 360 },
+        fetchWindowIcons: false,
+      })
+      if (!sources.length) {
+        return { mime_type: 'image/png', captured_at: capturedAt, status: 'no_screen_source' }
+      }
+
+      const preferredDisplayId = this.config?.selectedDisplayIds?.[0]
+      const source = sources.find((item) => item.display_id === preferredDisplayId) || sources[0]
+      const thumbnail = source.thumbnail
+      if (thumbnail.isEmpty()) {
+        return { mime_type: 'image/png', captured_at: capturedAt, status: 'empty_thumbnail' }
+      }
+      const size = thumbnail.getSize()
+      return {
+        image_base64: thumbnail.toDataURL(),
+        mime_type: 'image/png',
+        captured_at: capturedAt,
+        width: size.width,
+        height: size.height,
+        status: 'ok',
+      }
+    } catch (error) {
+      return {
+        mime_type: 'image/png',
+        captured_at: capturedAt,
+        status: `capture_error:${error instanceof Error ? error.message : 'unknown'}`,
+      }
+    }
+  }
+
+  private async sendPreview(): Promise<void> {
+    if (!this.config?.deviceToken || !this.config.deviceId) return
+    const payload = await this.capturePreviewPayload()
+    try {
+      const request = net.request({
+        method: 'POST',
+        url: `${this.config.apiBaseUrl}/player/preview`,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.deviceToken}`,
+        },
+      })
+
+      await new Promise<void>((resolve, reject) => {
+        request.on('response', (response) => {
+          if ((response.statusCode || 500) < 300) {
+            resolve()
+            return
+          }
+          reject(new Error(`Preview upload failed: ${response.statusCode}`))
+        })
+        request.on('error', reject)
+        request.write(JSON.stringify(payload))
+        request.end()
+      })
+    } catch (error) {
+      console.warn('[heartbeat] Failed to send preview:', error)
+    }
   }
 
   start(config: AppConfig): void {
@@ -65,7 +139,11 @@ class HeartbeatService {
     const cache = persistence.getCacheStatus()
     const online =
       connection.backend === 'connected' || connection.mqtt === 'connected'
-    const lastError = connection.lastError ?? playbackState?.errors?.at(-1) ?? null
+    const rawLastError =
+      connection.lastError ?? playbackState?.errors?.at(-1) ?? null
+    const lastError = rawLastError
+      ? withErrorTimestamp(rawLastError)
+      : null
 
     const payload: TelemetryPayload = {
       device_id: this.config.deviceId,
@@ -106,7 +184,7 @@ class HeartbeatService {
             )
           ) {
             const reason = `Device provisioning invalidated (heartbeat status ${response.statusCode})`
-            this.status.last_error = reason
+            this.status.last_error = withErrorTimestamp(reason)
             this.provisioningInvalidationHandler?.(reason)
             resolve()
           } else {
@@ -117,9 +195,12 @@ class HeartbeatService {
         request.write(JSON.stringify(payload))
         request.end()
       })
+      await this.sendPreview()
     } catch (err) {
       // Silent fail — heartbeat errors are non-critical
-      this.status.last_error = err instanceof Error ? err.message : String(err)
+      this.status.last_error = withErrorTimestamp(
+        err instanceof Error ? err.message : String(err)
+      )
       console.warn('[heartbeat] Failed to send telemetry:', err)
     }
   }

@@ -47,6 +47,7 @@ import {
   decidePlaybackOpen,
   decidePlaybackClose,
 } from './services/playback-control-policy'
+import { withErrorTimestamp } from '../shared/error-log'
 
 export function registerIpcHandlers(): void {
   function resetActivationState(): AppConfig {
@@ -445,7 +446,9 @@ export function registerIpcHandlers(): void {
             available_assets: fallbackCheck.available,
             missing_assets: fallbackCheck.missing,
             last_prefetch_at: now,
-            last_error: prefetch.failed[0] ?? null,
+            last_error: prefetch.failed[0]
+              ? withErrorTimestamp(prefetch.failed[0], new Date(now))
+              : null,
           })
           mqttService.setBackendStatus(
             'disconnected',
@@ -473,9 +476,13 @@ export function registerIpcHandlers(): void {
         last_cleanup_at: cleanupAt,
         last_error:
           prefetch.failed[0]
-          ?? (verified.missing > 0
-            ? `Missing ${verified.missing}/${verified.total} assets`
-            : null),
+            ? withErrorTimestamp(prefetch.failed[0], new Date(now))
+            : (verified.missing > 0
+              ? withErrorTimestamp(
+                `Missing ${verified.missing}/${verified.total} assets`,
+                new Date(now)
+              )
+              : null),
       })
 
       mqttService.setBackendStatus(
@@ -504,7 +511,7 @@ export function registerIpcHandlers(): void {
           available_assets: verified.available,
           missing_assets: verified.missing,
           last_prefetch_at: now,
-          last_error: message,
+          last_error: withErrorTimestamp(message, new Date(now)),
         })
         mqttService.setBackendStatus(
           'disconnected',
@@ -514,7 +521,7 @@ export function registerIpcHandlers(): void {
       }
 
       persistence.saveCacheStatus({
-        last_error: message,
+        last_error: withErrorTimestamp(message),
       })
       mqttService.setBackendStatus('disconnected', message)
       throw err
@@ -587,11 +594,11 @@ export function registerIpcHandlers(): void {
         playback_status: playbackState?.status ?? 'idle',
         cache,
         heartbeat: heartbeatService.getStatus(),
-        last_error:
+        last_error: (
           connection.lastError
           ?? playbackState?.errors?.at(-1)
           ?? cache.last_error
-          ?? null,
+        ) || null,
       }
     }
   )

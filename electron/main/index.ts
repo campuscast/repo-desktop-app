@@ -22,10 +22,12 @@ import {
   resolveDisplaysForPlayback,
 } from './display-bindings'
 import { startupMark } from './startup-trace'
+import { withErrorTimestamp } from '../shared/error-log'
 
 const STARTUP_DEVICE_REVALIDATE_TIMEOUT_MS = 2500
 
 startupMark('main:module-evaluated')
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 // Prevent multiple instances
 const gotLock = app.requestSingleInstanceLock()
@@ -121,13 +123,19 @@ async function syncScheduleOnAutoLaunch(config: AppConfig): Promise<void> {
       last_cleanup_at: cleanupAt,
       last_error:
         prefetch.failed[0]
-        ?? (verified.missing > 0
-          ? `Missing ${verified.missing}/${verified.total} assets`
-          : null),
+          ? withErrorTimestamp(prefetch.failed[0], new Date(now))
+          : (verified.missing > 0
+            ? withErrorTimestamp(
+              `Missing ${verified.missing}/${verified.total} assets`,
+              new Date(now)
+            )
+            : null),
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    persistence.saveCacheStatus({ last_error: message })
+    persistence.saveCacheStatus({
+      last_error: withErrorTimestamp(message),
+    })
     console.warn('[autostart] Startup sync failed:', message)
   }
 }

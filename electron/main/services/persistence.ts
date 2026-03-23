@@ -31,6 +31,7 @@ const DEFAULT_CONFIG: AppConfig = {
   exitShortcutAccelerator: 'Ctrl+Alt+Shift+Q',
   locale: 'en',
   theme: 'dark',
+  timeZone: 'system',
   autoLaunchEnabled: false,
 }
 
