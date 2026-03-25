@@ -1,5 +1,12 @@
-import { app, BrowserWindow, Menu, globalShortcut, ipcMain } from 'electron'
-import { createControlWindow, openPlaybackWindows } from './windows'
+import { app, BrowserWindow, Menu, globalShortcut, ipcMain, powerMonitor } from 'electron'
+import {
+  closeAllPlaybackWindows,
+  createControlWindow,
+  isPlaybackRequested,
+  openPlaybackWindows,
+  preservePlaybackIntent,
+  reloadControlWindow,
+} from './windows'
 import {
   initDisplayManager,
   getDisplays,
@@ -15,7 +22,7 @@ import {
   getAutoLaunchSettings,
   isLaunchedViaAutoLaunch,
 } from './services/auto-launch'
-import type { AppConfig, ReleaseManifest } from '../shared/ipc-types'
+import type { AppConfig, DisplayInfo, ReleaseManifest } from '../shared/ipc-types'
 import { IPC } from '../shared/ipc-channels'
 import {
   deriveDisplayBindings,
@@ -23,10 +30,13 @@ import {
 } from './display-bindings'
 import { startupMark } from './startup-trace'
 import { withErrorTimestamp } from '../shared/error-log'
+import { initRuntimeLogging } from './services/runtime-log'
 
 const STARTUP_DEVICE_REVALIDATE_TIMEOUT_MS = 2500
+const PLAYBACK_RECOVERY_DELAY_MS = 1_500
 
 startupMark('main:module-evaluated')
+initRuntimeLogging('campuscast-player-main.log')
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 // Prevent multiple instances
@@ -43,14 +53,21 @@ function isManifestUsable(manifest: ReleaseManifest | null): manifest is Release
   return true
 }
 
-function openPlaybackUsingSavedDisplays(config: AppConfig): void {
-  const displays = getDisplays()
+let playbackRecoveryTimer: NodeJS.Timeout | null = null
+let playbackRecoveryInFlight = false
+let pendingPlaybackRecoveryReason: string | null = null
+
+function restorePlaybackUsingSavedDisplays(
+  config: AppConfig,
+  reason: string,
+  displays = getDisplays()
+): void {
   const resolved = resolveDisplaysForPlayback(config, displays)
   for (const line of resolved.diagnostics) {
     console.info(line)
   }
   if (resolved.usedFallback) {
-    console.warn('[display-restore] Autostart playback used fallback display selection')
+    console.warn(`[display-restore] Playback recovery used fallback selection (${reason})`)
   }
   if (!resolved.usedFallback && resolved.selectedDisplays.length > 0) {
     const resolvedIds = resolved.selectedDisplays.map((display) => display.id)
@@ -61,12 +78,14 @@ function openPlaybackUsingSavedDisplays(config: AppConfig): void {
         selectedDisplayBindings: bindings,
       })
       console.info(
-        `[display-restore] Persisted remapped display ids after autostart restore: ${resolvedIds.join(', ')}`
+        `[display-restore] Persisted remapped display ids after ${reason}: ${resolvedIds.join(', ')}`
       )
     }
   }
   if (resolved.selectedDisplays.length > 0) {
     openPlaybackWindows(resolved.selectedDisplays)
+  } else {
+    console.warn(`[display-restore] No displays resolved for playback recovery (${reason})`)
   }
 }
 
@@ -76,6 +95,76 @@ function sameIdOrder(a: string[], b: string[]): boolean {
     if (a[i] !== b[i]) return false
   }
   return true
+}
+
+async function runPlaybackRecovery(reason: string): Promise<void> {
+  const config = persistence.getConfig()
+  if (
+    !isPlaybackRequested()
+    || config.activationState !== 'activated'
+    || config.selectedDisplayIds.length === 0
+  ) {
+    return
+  }
+
+  if (playbackRecoveryInFlight) {
+    pendingPlaybackRecoveryReason = reason
+    return
+  }
+
+  playbackRecoveryInFlight = true
+  try {
+    console.info(`[display-restore] Starting playback recovery (${reason})`)
+    closeAllPlaybackWindows()
+    preservePlaybackIntent()
+    const displays = await waitForDisplayStability()
+    if (!isPlaybackRequested()) {
+      console.info(
+        `[display-restore] Playback recovery aborted because intent was cleared (${reason})`
+      )
+      return
+    }
+    restorePlaybackUsingSavedDisplays(persistence.getConfig(), reason, displays)
+  } catch (error) {
+    console.warn(`[display-restore] Playback recovery failed (${reason}):`, error)
+  } finally {
+    playbackRecoveryInFlight = false
+    if (pendingPlaybackRecoveryReason) {
+      const nextReason = pendingPlaybackRecoveryReason
+      pendingPlaybackRecoveryReason = null
+      schedulePlaybackRecovery(nextReason)
+    }
+  }
+}
+
+function schedulePlaybackRecovery(reason: string): void {
+  const config = persistence.getConfig()
+  if (
+    !isPlaybackRequested()
+    || config.activationState !== 'activated'
+    || config.selectedDisplayIds.length === 0
+  ) {
+    return
+  }
+
+  pendingPlaybackRecoveryReason = reason
+  if (playbackRecoveryTimer) {
+    clearTimeout(playbackRecoveryTimer)
+  }
+
+  playbackRecoveryTimer = setTimeout(() => {
+    playbackRecoveryTimer = null
+    const nextReason = pendingPlaybackRecoveryReason ?? reason
+    pendingPlaybackRecoveryReason = null
+    void runPlaybackRecovery(nextReason)
+  }, PLAYBACK_RECOVERY_DELAY_MS)
+}
+
+function handleDisplayTopologyChange(displays: DisplayInfo[]): void {
+  console.info(
+    `[display-restore] Display topology changed (${displays.length} display(s))`
+  )
+  schedulePlaybackRecovery('display-topology-change')
 }
 
 async function syncScheduleOnAutoLaunch(config: AppConfig): Promise<void> {
@@ -275,7 +364,7 @@ app.whenReady().then(async () => {
   startupMark('main:control-window-created')
 
   // Initialize display manager (monitors connected displays)
-  initDisplayManager(controlWindow)
+  initDisplayManager(controlWindow, handleDisplayTopologyChange)
   startupMark('main:display-manager-initialized')
 
   // Revalidate persisted activation after first window creation so
@@ -324,14 +413,44 @@ app.whenReady().then(async () => {
           `[autostart] Display configuration stabilized (${displays.length} display(s))`
         )
         startupMark('main:autostart-displays-stable', { displays: displays.length })
-        openPlaybackUsingSavedDisplays(config)
+        restorePlaybackUsingSavedDisplays(config, 'autostart', displays)
       })
       .catch((err) => {
         console.warn('[autostart] Display stabilization failed, restoring immediately:', err)
         startupMark('main:autostart-displays-stable-failed')
-        openPlaybackUsingSavedDisplays(config)
+        restorePlaybackUsingSavedDisplays(config, 'autostart-fallback')
       })
   }
+
+  powerMonitor.on('resume', () => {
+    console.info('[runtime] powerMonitor resume')
+    void reloadControlWindow('power-resume').catch((error) => {
+      console.warn('[runtime] control window reload failed after resume:', error)
+    })
+    schedulePlaybackRecovery('power-resume')
+  })
+
+  powerMonitor.on('unlock-screen', () => {
+    console.info('[runtime] powerMonitor unlock-screen')
+    schedulePlaybackRecovery('unlock-screen')
+  })
+
+  app.on('child-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') {
+      return
+    }
+    if (details.type !== 'GPU') {
+      return
+    }
+
+    console.warn(
+      `[runtime] child-process-gone type=${details.type} reason=${details.reason}`
+    )
+    void reloadControlWindow(`child-process-gone:${details.type}`).catch((error) => {
+      console.warn('[runtime] control window reload failed after child process exit:', error)
+    })
+    schedulePlaybackRecovery(`child-process-gone:${details.type}`)
+  })
 
   // macOS: re-create window when dock icon clicked
   app.on('activate', () => {
@@ -360,6 +479,10 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  if (playbackRecoveryTimer) {
+    clearTimeout(playbackRecoveryTimer)
+    playbackRecoveryTimer = null
+  }
   heartbeatService.stop()
 })
 

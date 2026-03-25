@@ -5,6 +5,8 @@ import type { DisplayInfo } from '../shared/ipc-types'
 
 let cachedDisplays: DisplayInfo[] = []
 
+export type DisplayChangeListener = (displays: DisplayInfo[]) => void
+
 export function getDisplays(): DisplayInfo[] {
   const electronDisplays = screen.getAllDisplays()
   cachedDisplays = electronDisplays.map((d, i) => electronDisplayToInfo(d, i))
@@ -19,24 +21,30 @@ export function findDisplay(displayId: string): DisplayInfo | undefined {
   return cachedDisplays.find((d) => d.id === displayId)
 }
 
-export function initDisplayManager(controlWindow: BrowserWindow): void {
+export function initDisplayManager(
+  controlWindow: BrowserWindow,
+  onDisplayChanged?: DisplayChangeListener
+): void {
   // Initial scan
   getDisplays()
 
-  // Watch for display changes
-  screen.on('display-added', () => {
+  const handleChange = (): void => {
     const displays = getDisplays()
     notifyDisplayChange(controlWindow, displays)
+    onDisplayChanged?.(displays)
+  }
+
+  // Watch for display changes
+  screen.on('display-added', () => {
+    handleChange()
   })
 
   screen.on('display-removed', () => {
-    const displays = getDisplays()
-    notifyDisplayChange(controlWindow, displays)
+    handleChange()
   })
 
   screen.on('display-metrics-changed', () => {
-    const displays = getDisplays()
-    notifyDisplayChange(controlWindow, displays)
+    handleChange()
   })
 }
 

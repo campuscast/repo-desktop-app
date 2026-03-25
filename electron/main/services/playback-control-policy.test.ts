@@ -12,6 +12,12 @@ describe('playback control policy', () => {
     assert.equal(decision.reason, 'already-running')
   })
 
+  it('prevents duplicate start while playback recovery is still requested', () => {
+    const decision = decidePlaybackOpen(0, true)
+    assert.equal(decision.allowed, false)
+    assert.equal(decision.reason, 'already-running')
+  })
+
   it('allows start from stopped state', () => {
     const decision = decidePlaybackOpen(0)
     assert.equal(decision.allowed, true)
@@ -22,5 +28,11 @@ describe('playback control policy', () => {
     const decision = decidePlaybackClose(0)
     assert.equal(decision.allowed, false)
     assert.equal(decision.reason, 'already-stopped')
+  })
+
+  it('allows stop while playback intent is still active without live windows', () => {
+    const decision = decidePlaybackClose(0, true)
+    assert.equal(decision.allowed, true)
+    assert.equal(decision.reason, 'ok')
   })
 })

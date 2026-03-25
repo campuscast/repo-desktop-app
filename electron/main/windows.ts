@@ -10,11 +10,14 @@ import {
 import { startupMark } from './startup-trace'
 
 const isDev = process.env.NODE_ENV !== 'production'
+const WINDOW_RECOVERY_DELAY_MS = 1_500
+const WINDOW_UNRESPONSIVE_GRACE_MS = 15_000
 
 let controlWindow: BrowserWindow | null = null
 const playbackWindows = new Map<string, BrowserWindow>()
 const playbackPresentationStates = new Map<string, PlaybackPresentationState>()
 let powerSaveBlockerId: number | null = null
+let playbackRequested = false
 
 function getPreloadPath(): string {
   return join(__dirname, '../preload/index.mjs')
@@ -23,6 +26,129 @@ function getPreloadPath(): string {
 function getRendererPath(): string {
   // In production, renderer is in extraResources/renderer/
   return join(process.resourcesPath, 'renderer', 'index.html')
+}
+
+function buildRendererTarget(
+  mode: 'control' | 'playback',
+  displayId?: string
+): { devUrl: string | null; query: Record<string, string> } {
+  const query: Record<string, string> = { mode }
+  if (displayId) {
+    query.displayId = displayId
+  }
+
+  if (!isDev || !process.env.ELECTRON_RENDERER_URL) {
+    return { devUrl: null, query }
+  }
+
+  const url = new URL(process.env.ELECTRON_RENDERER_URL)
+  url.searchParams.set('mode', mode)
+  if (displayId) {
+    url.searchParams.set('displayId', displayId)
+  } else {
+    url.searchParams.delete('displayId')
+  }
+
+  return { devUrl: url.toString(), query }
+}
+
+async function loadRendererWindow(
+  win: BrowserWindow,
+  mode: 'control' | 'playback',
+  displayId?: string
+): Promise<void> {
+  const target = buildRendererTarget(mode, displayId)
+  if (target.devUrl) {
+    await win.loadURL(target.devUrl)
+    return
+  }
+
+  await win.loadFile(getRendererPath(), { query: target.query })
+}
+
+function attachWindowRecovery(
+  win: BrowserWindow,
+  label: string,
+  recover: (reason: string) => void
+): void {
+  let recoveryTimer: NodeJS.Timeout | null = null
+  let unresponsiveTimer: NodeJS.Timeout | null = null
+
+  const clearRecoveryTimer = (): void => {
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer)
+      recoveryTimer = null
+    }
+  }
+
+  const clearUnresponsiveTimer = (): void => {
+    if (unresponsiveTimer) {
+      clearTimeout(unresponsiveTimer)
+      unresponsiveTimer = null
+    }
+  }
+
+  const scheduleRecovery = (reason: string): void => {
+    if (win.isDestroyed()) return
+    if (recoveryTimer) return
+
+    console.warn(`[window-recovery] ${label}: ${reason}`)
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null
+      if (win.isDestroyed()) return
+      recover(reason)
+    }, WINDOW_RECOVERY_DELAY_MS)
+  }
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    scheduleRecovery(`render-process-gone:${details.reason}`)
+  })
+
+  win.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3) return
+      scheduleRecovery(`did-fail-load:${errorCode}:${errorDescription}`)
+    }
+  )
+
+  win.on('unresponsive', () => {
+    if (win.isDestroyed()) return
+    if (unresponsiveTimer) return
+
+    console.warn(`[window-recovery] ${label}: unresponsive`)
+    unresponsiveTimer = setTimeout(() => {
+      unresponsiveTimer = null
+      scheduleRecovery('unresponsive')
+    }, WINDOW_UNRESPONSIVE_GRACE_MS)
+  })
+
+  win.on('responsive', () => {
+    clearUnresponsiveTimer()
+  })
+
+  win.on('closed', () => {
+    clearRecoveryTimer()
+    clearUnresponsiveTimer()
+  })
+}
+
+function resolveRecoveryDisplay(display: DisplayInfo): DisplayInfo {
+  const currentDisplays = screen
+    .getAllDisplays()
+    .map((entry, index) => electronDisplayToInfo(entry, index))
+
+  return currentDisplays.find((item) => item.id === display.id)
+    ?? currentDisplays.find(
+      (item) =>
+        item.x === display.x
+        && item.y === display.y
+        && item.width === display.width
+        && item.height === display.height
+    )
+    ?? currentDisplays.find((item) => item.isPrimary)
+    ?? currentDisplays[0]
+    ?? display
 }
 
 export function createControlWindow(): BrowserWindow {
@@ -74,16 +200,17 @@ export function createControlWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
-  // Load renderer
-  if (isDev && process.env.ELECTRON_RENDERER_URL) {
-    startupMark('main:control-window-load-url')
-    controlWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=control`)
-  } else {
-    startupMark('main:control-window-load-file')
-    controlWindow.loadFile(getRendererPath(), {
-      query: { mode: 'control' },
+  attachWindowRecovery(controlWindow, 'control-window', (reason) => {
+    console.warn(`[window-recovery] control-window reload: ${reason}`)
+    void reloadControlWindow(reason).catch((error) => {
+      console.warn('[window-recovery] control-window recovery failed:', error)
     })
-  }
+  })
+
+  startupMark('main:control-window-load')
+  void loadRendererWindow(controlWindow, 'control').catch((error) => {
+    console.warn('[window-recovery] control-window initial load failed:', error)
+  })
 
   controlWindow.on('closed', () => {
     controlWindow = null
@@ -94,6 +221,16 @@ export function createControlWindow(): BrowserWindow {
 
 export function getControlWindow(): BrowserWindow | null {
   return controlWindow
+}
+
+export async function reloadControlWindow(reason = 'manual'): Promise<void> {
+  if (!controlWindow || controlWindow.isDestroyed()) {
+    createControlWindow()
+    return
+  }
+
+  console.info(`[window-recovery] control-window reload requested: ${reason}`)
+  await loadRendererWindow(controlWindow, 'control')
 }
 
 export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
@@ -144,15 +281,19 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
     }
   })
 
-  if (isDev && process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(
-      `${process.env.ELECTRON_RENDERER_URL}?mode=playback&displayId=${display.id}`
+  attachWindowRecovery(win, `playback-window:${display.id}`, (reason) => {
+    console.warn(
+      `[window-recovery] reopening playback window ${display.id}: ${reason}`
     )
-  } else {
-    win.loadFile(getRendererPath(), {
-      query: { mode: 'playback', displayId: display.id },
-    })
-  }
+    recreatePlaybackWindow(display, reason)
+  })
+
+  void loadRendererWindow(win, 'playback', display.id).catch((error) => {
+    console.warn(
+      `[window-recovery] playback window ${display.id} initial load failed:`,
+      error
+    )
+  })
 
   playbackWindows.set(display.id, win)
 
@@ -172,6 +313,21 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
   })
 
   return win
+}
+
+function recreatePlaybackWindow(
+  display: DisplayInfo,
+  reason: string
+): void {
+  closePlaybackWindow(display.id)
+  if (!playbackRequested) {
+    console.info(
+      `[window-recovery] playback intent cleared; skip recreate for ${display.id} (${reason})`
+    )
+    return
+  }
+
+  createPlaybackWindow(resolveRecoveryDisplay(display))
 }
 
 export function closePlaybackWindow(displayId: string): void {
@@ -199,12 +355,14 @@ export function closePlaybackWindow(displayId: string): void {
 }
 
 export function closeAllPlaybackWindows(): void {
+  playbackRequested = false
   for (const [id] of playbackWindows) {
     closePlaybackWindow(id)
   }
 }
 
 export function openPlaybackWindows(displays: DisplayInfo[]): void {
+  playbackRequested = displays.length > 0
   for (const display of displays) {
     createPlaybackWindow(display)
   }
@@ -212,6 +370,14 @@ export function openPlaybackWindows(displays: DisplayInfo[]): void {
 
 export function getPlaybackWindows(): Map<string, BrowserWindow> {
   return playbackWindows
+}
+
+export function isPlaybackRequested(): boolean {
+  return playbackRequested
+}
+
+export function preservePlaybackIntent(): void {
+  playbackRequested = true
 }
 
 /** Send a message to all playback windows */

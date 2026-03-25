@@ -27,6 +27,7 @@ import {
   openPlaybackWindows,
   closeAllPlaybackWindows,
   getPlaybackWindows,
+  isPlaybackRequested,
 } from './windows'
 import {
   deriveDisplayBindings,
@@ -231,7 +232,10 @@ export function registerIpcHandlers(): void {
   // ─── Playback Windows ──────────────────────────────────────────────
 
   ipcMain.handle(IPC.PLAYBACK_OPEN, () => {
-    const openDecision = decidePlaybackOpen(getPlaybackWindows().size)
+    const openDecision = decidePlaybackOpen(
+      getPlaybackWindows().size,
+      isPlaybackRequested()
+    )
     if (!openDecision.allowed) {
       return openDecision
     }
@@ -262,7 +266,10 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.PLAYBACK_CLOSE, () => {
-    const closeDecision = decidePlaybackClose(getPlaybackWindows().size)
+    const closeDecision = decidePlaybackClose(
+      getPlaybackWindows().size,
+      isPlaybackRequested()
+    )
     if (!closeDecision.allowed) {
       return closeDecision
     }
@@ -610,7 +617,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.PLAYBACK_STATE, () => {
-    return getPlaybackWindows().size > 0 ? 'running' : 'stopped'
+    return isPlaybackRequested() ? 'running' : 'stopped'
   })
 
   ipcMain.handle(IPC.MQTT_CONNECT, async (_e, config: MqttConfig) => {

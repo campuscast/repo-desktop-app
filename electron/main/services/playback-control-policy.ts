@@ -8,17 +8,21 @@ export interface PlaybackCloseDecision {
   reason: 'ok' | 'already-stopped'
 }
 
-export function decidePlaybackOpen(windowCount: number): PlaybackOpenDecision {
-  if (windowCount > 0) {
+export function decidePlaybackOpen(
+  windowCount: number,
+  playbackRequested = false
+): PlaybackOpenDecision {
+  if (windowCount > 0 || playbackRequested) {
     return { allowed: false, reason: 'already-running' }
   }
   return { allowed: true, reason: 'ok' }
 }
 
 export function decidePlaybackClose(
-  windowCount: number
+  windowCount: number,
+  playbackRequested = false
 ): PlaybackCloseDecision {
-  if (windowCount === 0) {
+  if (windowCount === 0 && !playbackRequested) {
     return { allowed: false, reason: 'already-stopped' }
   }
   return { allowed: true, reason: 'ok' }
