@@ -83,7 +83,7 @@ export interface ElectronAPI {
   onConnectionStatusChanged(cb: (status: ConnectionStatus) => void): () => void
   onNewRelease(cb: (notification: ReleaseNotification) => void): () => void
   onPlaybackScheduleUpdate(
-    cb: (manifest: ReleaseManifest) => void
+    cb: (manifest: ReleaseManifest | null) => void
   ): () => void
   onActivationInvalidated(cb: (reason: string) => void): () => void
 }
@@ -178,7 +178,7 @@ const api: ElectronAPI = {
   onPlaybackScheduleUpdate: (cb) => {
     const handler = (
       _: Electron.IpcRendererEvent,
-      manifest: ReleaseManifest
+      manifest: ReleaseManifest | null
     ) => cb(manifest)
     ipcRenderer.on(IPC.PLAYBACK_SCHEDULE_UPDATE, handler)
     return () =>

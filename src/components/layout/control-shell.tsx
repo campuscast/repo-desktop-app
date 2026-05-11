@@ -47,7 +47,7 @@ export function ControlShell() {
   const effectiveConnection = deriveEffectiveConnection(connectionStatus)
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-background">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {/* Offline Banner */}
       <OfflineBanner />
 
@@ -78,7 +78,7 @@ export function ControlShell() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Sidebar Navigation */}
         <nav className="flex w-48 shrink-0 flex-col border-r border-border bg-card/50 p-2">
           <div className="flex flex-1 flex-col gap-1">
@@ -116,7 +116,7 @@ export function ControlShell() {
         </nav>
 
         {/* Content Area */}
-        <main className="flex-1 overflow-auto">
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto">
           {screen === 'diagnostics' && <DiagnosticsScreen />}
           {screen === 'displays' && <DisplaySelection />}
           {screen === 'settings' && <SettingsScreen />}

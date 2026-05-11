@@ -7,7 +7,6 @@ import type {
   TelemetryPayload,
   DeviceRevalidateResponse,
   PlayerHealthSnapshot,
-  Release,
   ReleaseManifest,
 } from '../shared/ipc-types'
 import { persistence } from './services/persistence'
@@ -43,12 +42,12 @@ import {
   setAutoLaunchEnabled,
 } from './services/auto-launch'
 import { buildCacheStatusAfterManualClear } from './services/cache-cleanup-policy'
-import { decideReleaseFetchPolicy } from './services/release-fetch-policy'
 import {
   decidePlaybackOpen,
   decidePlaybackClose,
 } from './services/playback-control-policy'
-import { withErrorTimestamp } from '../shared/error-log'
+import { runtimeScheduleSyncService } from './services/runtime-schedule-sync'
+import { selectRelevantAssets } from './services/relevant-asset-policy'
 
 export function registerIpcHandlers(): void {
   function resetActivationState(): AppConfig {
@@ -70,6 +69,7 @@ export function registerIpcHandlers(): void {
     })
     mqttService.disconnect()
     heartbeatService.stop()
+    runtimeScheduleSyncService.stop()
     return persistence.getConfig()
   }
 
@@ -110,16 +110,6 @@ export function registerIpcHandlers(): void {
     return true
   }
 
-  function getLastKnownGoodManifest(reason: string): ReleaseManifest | null {
-    const cached = persistence.getLastManifest()
-    if (!isManifestUsable(cached)) {
-      return null
-    }
-
-    console.warn(`[player] Falling back to last-known-good manifest: ${reason}`)
-    return cached
-  }
-
   // ─── Config / Persistence ───────────────────────────────────────────
 
   ipcMain.handle(IPC.CONFIG_GET, () => {
@@ -145,6 +135,9 @@ export function registerIpcHandlers(): void {
     const updated = persistence.getConfig()
     if (updated.activationState === 'activated' && updated.deviceToken) {
       heartbeatService.updateConfig(updated)
+      runtimeScheduleSyncService.start()
+    } else {
+      runtimeScheduleSyncService.stop()
     }
     return updated
   })
@@ -190,6 +183,8 @@ export function registerIpcHandlers(): void {
         // Start heartbeat
         const updatedConfig = persistence.getConfig()
         heartbeatService.start(updatedConfig)
+        runtimeScheduleSyncService.start()
+        runtimeScheduleSyncService.triggerNow('activation')
         mqttService.setBackendStatus('connecting', null)
 
         // Auto-connect MQTT
@@ -359,180 +354,11 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(IPC.BACKEND_FETCH_RELEASE, async () => {
-    const config = persistence.getConfig()
-    if (!config.deviceToken || !config.deviceId) return null
-
-    mqttService.setBackendStatus('connecting', null)
-    try {
-      const release = await backendClient.fetchRelease(
-        config.apiBaseUrl,
-        config.deviceToken,
-        config.deviceId
-      )
-      if (release) {
-        const policy = decideReleaseFetchPolicy({ scenario: 'release-available' })
-        mqttService.setBackendStatus(policy.backendStatus, policy.lastError)
-        return release
-      }
-
-      const policy = decideReleaseFetchPolicy({ scenario: 'no-active-release' })
-      mqttService.setBackendStatus(policy.backendStatus, policy.lastError)
-      return null
-    } catch (err) {
-      if (isFatalProvisioningError(err, 'release')) {
-        handleProvisioningInvalidation(
-          'Device provisioning is no longer valid in CMS'
-        )
-        return null
-      }
-
-      const message = err instanceof Error ? err.message : 'Backend unreachable'
-      const policy = decideReleaseFetchPolicy({
-        scenario: 'network-error',
-        errorMessage: message,
-      })
-      const fallback = policy.shouldUseFallbackManifest
-        ? getLastKnownGoodManifest(message)
-        : null
-      if (fallback) {
-        mqttService.setBackendStatus(
-          policy.backendStatus,
-          `Backend unavailable; using cached release (${message})`
-        )
-        const syntheticRelease: Release = {
-          release_id: fallback.release_id,
-          schedule_id: fallback.schedule_id,
-          version_number: fallback.version_number,
-          zone_id: fallback.zone_id,
-          manifest_url: '',
-          manifest_signature: 'cached',
-          manifest_key_id: 'cached',
-          status: 'active',
-          published_at: fallback.created_at,
-        }
-        return syntheticRelease
-      }
-
-      mqttService.setBackendStatus(policy.backendStatus, policy.lastError)
-      return null
-    }
+    return runtimeScheduleSyncService.fetchLatestRelease()
   })
 
   ipcMain.handle(IPC.BACKEND_FETCH_MANIFEST, async (_e, releaseId: string) => {
-    const config = persistence.getConfig()
-    if (!config.deviceToken) throw new Error('Not authenticated')
-
-    mqttService.setBackendStatus('connecting', null)
-    try {
-      const manifest = await backendClient.fetchManifest(
-        config.apiBaseUrl,
-        config.deviceToken,
-        releaseId
-      )
-
-      if (!isManifestUsable(manifest)) {
-        throw new Error('Manifest payload is invalid')
-      }
-
-      const prefetch = await contentCacheService.prefetchManifestAssets(
-        manifest,
-        config.deviceToken
-      )
-      const verified = contentCacheService.verifyManifestAssets(manifest)
-      const now = new Date().toISOString()
-
-      if (prefetch.failed.length > 0) {
-        const fallback = getLastKnownGoodManifest(
-          `Manifest prefetch incomplete (${prefetch.failed.length} failed asset downloads)`
-        )
-        if (fallback) {
-          const fallbackCheck = contentCacheService.verifyManifestAssets(fallback)
-          persistence.saveCacheStatus({
-            current_release_id: fallback.release_id,
-            total_assets: fallbackCheck.total,
-            available_assets: fallbackCheck.available,
-            missing_assets: fallbackCheck.missing,
-            last_prefetch_at: now,
-            last_error: prefetch.failed[0]
-              ? withErrorTimestamp(prefetch.failed[0], new Date(now))
-              : null,
-          })
-          mqttService.setBackendStatus(
-            'disconnected',
-            'Using cached manifest due to failed asset prefetch'
-          )
-          return fallback
-        }
-      }
-
-      persistence.saveLastManifest(manifest)
-      persistence.saveConfig({ lastSyncAt: now })
-
-      let cleanupAt: string | null = persistence.getCacheStatus().last_cleanup_at
-      if (verified.missing === 0) {
-        contentCacheService.cleanupUnusedAssets(manifest)
-        cleanupAt = now
-      }
-
-      persistence.saveCacheStatus({
-        current_release_id: manifest.release_id,
-        total_assets: verified.total,
-        available_assets: verified.available,
-        missing_assets: verified.missing,
-        last_prefetch_at: now,
-        last_cleanup_at: cleanupAt,
-        last_error:
-          prefetch.failed[0]
-            ? withErrorTimestamp(prefetch.failed[0], new Date(now))
-            : (verified.missing > 0
-              ? withErrorTimestamp(
-                `Missing ${verified.missing}/${verified.total} assets`,
-                new Date(now)
-              )
-              : null),
-      })
-
-      mqttService.setBackendStatus(
-        verified.missing === 0 ? 'connected' : 'disconnected',
-        verified.missing === 0
-          ? null
-          : `Manifest downloaded with missing assets (${verified.missing}/${verified.total})`
-      )
-      return manifest
-    } catch (err) {
-      if (isFatalProvisioningError(err, 'manifest')) {
-        handleProvisioningInvalidation(
-          'Device provisioning is no longer valid in CMS'
-        )
-        throw new Error('Device provisioning is no longer valid')
-      }
-
-      const message = err instanceof Error ? err.message : 'Backend unreachable'
-      const fallback = getLastKnownGoodManifest(message)
-      if (fallback) {
-        const verified = contentCacheService.verifyManifestAssets(fallback)
-        const now = new Date().toISOString()
-        persistence.saveCacheStatus({
-          current_release_id: fallback.release_id,
-          total_assets: verified.total,
-          available_assets: verified.available,
-          missing_assets: verified.missing,
-          last_prefetch_at: now,
-          last_error: withErrorTimestamp(message, new Date(now)),
-        })
-        mqttService.setBackendStatus(
-          'disconnected',
-          `Using cached manifest (${message})`
-        )
-        return fallback
-      }
-
-      persistence.saveCacheStatus({
-        last_error: withErrorTimestamp(message),
-      })
-      mqttService.setBackendStatus('disconnected', message)
-      throw err
-    }
+    return runtimeScheduleSyncService.applyReleaseManifest(releaseId)
   })
 
   ipcMain.handle(
@@ -712,7 +538,7 @@ export function registerIpcHandlers(): void {
 
     const manifest = persistence.getLastManifest()
     const verified = isManifestUsable(manifest)
-      ? contentCacheService.verifyManifestAssets(manifest)
+      ? contentCacheService.verifyAssets(selectRelevantAssets(manifest).assets)
       : {
         total: 0,
         available: 0,

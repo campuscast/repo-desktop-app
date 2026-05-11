@@ -2,7 +2,10 @@ import { desktopCapturer, net } from 'electron'
 import type {
   AppConfig,
   HeartbeatStatus,
+  PreviewUploadPayload,
+  ScreenshotRequestCommand,
   TelemetryPayload,
+  TelemetryResponse,
 } from '../../shared/ipc-types'
 import { getDisplays } from '../display-manager'
 import { persistence } from './persistence'
@@ -27,15 +30,15 @@ class HeartbeatService {
     last_error: null,
   }
 
-  private async capturePreviewPayload(): Promise<{
-    image_base64?: string
-    mime_type: string
-    captured_at: string
-    width?: number
-    height?: number
-    status: string
-  }> {
+  private async capturePreviewPayload(
+    displayId?: string | null,
+    requestId?: string | null
+  ): Promise<PreviewUploadPayload> {
     const capturedAt = new Date().toISOString()
+    const knownDisplays = getDisplays()
+    const requestedDisplay = displayId
+      ? knownDisplays.find((display) => display.id === displayId) ?? null
+      : null
     try {
       const sources = await Promise.race([
         desktopCapturer.getSources({
@@ -50,16 +53,52 @@ class HeartbeatService {
         }),
       ])
       if (!sources.length) {
-        return { mime_type: 'image/png', captured_at: capturedAt, status: 'no_screen_source' }
+        return {
+          mime_type: 'image/png',
+          captured_at: capturedAt,
+          status: 'no_screen_source',
+          display_id: displayId ?? null,
+          display_label: requestedDisplay?.label ?? null,
+          request_id: requestId ?? null,
+        }
       }
 
-      const preferredDisplayId = this.config?.selectedDisplayIds?.[0]
-      const source = sources.find((item) => item.display_id === preferredDisplayId) || sources[0]
-      const thumbnail = source.thumbnail
+      const requestedByCommand = Boolean(displayId)
+      const preferredDisplayId = displayId ?? this.config?.selectedDisplayIds?.[0]
+      const source = preferredDisplayId
+        ? sources.find((item) => item.display_id === preferredDisplayId)
+          ?? (requestedByCommand ? null : sources[0])
+        : sources[0]
+      if (requestedByCommand && preferredDisplayId && !source) {
+        return {
+          mime_type: 'image/png',
+          captured_at: capturedAt,
+          status: `display_not_found:${preferredDisplayId}`,
+          display_id: preferredDisplayId,
+          display_label: requestedDisplay?.label ?? null,
+          request_id: requestId ?? null,
+        }
+      }
+
+      const resolvedSource = source ?? sources[0]
+      const thumbnail = resolvedSource.thumbnail
       if (thumbnail.isEmpty()) {
-        return { mime_type: 'image/png', captured_at: capturedAt, status: 'empty_thumbnail' }
+        return {
+          mime_type: 'image/png',
+          captured_at: capturedAt,
+          status: 'empty_thumbnail',
+          display_id: resolvedSource.display_id || preferredDisplayId || null,
+          display_label: requestedDisplay?.label ?? resolvedSource.name ?? null,
+          request_id: requestId ?? null,
+        }
       }
       const size = thumbnail.getSize()
+      const resolvedDisplayId = resolvedSource.display_id || preferredDisplayId || null
+      const resolvedDisplayLabel = knownDisplays.find((display) => display.id === resolvedDisplayId)?.label
+        ?? requestedDisplay?.label
+        ?? resolvedSource.name
+        ?? null
+
       return {
         image_base64: thumbnail.toDataURL(),
         mime_type: 'image/png',
@@ -67,27 +106,34 @@ class HeartbeatService {
         width: size.width,
         height: size.height,
         status: 'ok',
+        display_id: resolvedDisplayId,
+        display_label: resolvedDisplayLabel,
+        request_id: requestId ?? null,
       }
     } catch (error) {
       return {
         mime_type: 'image/png',
         captured_at: capturedAt,
         status: `capture_error:${error instanceof Error ? error.message : 'unknown'}`,
+        display_id: displayId ?? null,
+        display_label: requestedDisplay?.label ?? null,
+        request_id: requestId ?? null,
       }
     }
   }
 
-  private async postJson(
+  private async postJson<T>(
     url: string,
     payload: unknown,
     timeoutMs: number
-  ): Promise<number | null> {
+  ): Promise<{ statusCode: number | null; body: T | null }> {
     if (!this.config?.deviceToken) {
       throw new Error('Not authenticated')
     }
 
-    return new Promise<number | null>((resolve, reject) => {
+    return new Promise<{ statusCode: number | null; body: T | null }>((resolve, reject) => {
       let settled = false
+      let responseBody = ''
       const request = net.request({
         method: 'POST',
         url,
@@ -113,14 +159,22 @@ class HeartbeatService {
       }
 
       request.on('response', (response) => {
-        response.on('data', () => {
-          // Drain the response stream to let Electron complete cleanly.
+        response.on('data', (chunk: Buffer) => {
+          responseBody += chunk.toString()
         })
         response.on('end', () => {
           if (settled) return
           settled = true
           clearTimeout(timeoutTimer)
-          resolve(response.statusCode ?? null)
+          let parsedBody: T | null = null
+          if (responseBody.trim()) {
+            try {
+              parsedBody = JSON.parse(responseBody) as T
+            } catch {
+              parsedBody = null
+            }
+          }
+          resolve({ statusCode: response.statusCode ?? null, body: parsedBody })
         })
         response.on('error', fail)
       })
@@ -131,11 +185,14 @@ class HeartbeatService {
     })
   }
 
-  private async sendPreview(): Promise<void> {
+  private async sendPreview(request?: ScreenshotRequestCommand | null): Promise<void> {
     if (!this.config?.deviceToken || !this.config.deviceId) return
-    const payload = await this.capturePreviewPayload()
+    const payload = await this.capturePreviewPayload(
+      request?.display_id ?? null,
+      request?.request_id ?? null
+    )
     try {
-      const statusCode = await this.postJson(
+      const { statusCode } = await this.postJson(
         `${this.config.apiBaseUrl}/player/preview`,
         payload,
         HEARTBEAT_REQUEST_TIMEOUT_MS
@@ -172,6 +229,10 @@ class HeartbeatService {
 
   updateConfig(config: AppConfig): void {
     this.config = config
+  }
+
+  triggerNow(): void {
+    void this.sendHeartbeat()
   }
 
   setProvisioningInvalidationHandler(
@@ -211,6 +272,10 @@ class HeartbeatService {
       current_release_id: playbackState?.releaseId ?? null,
       playback_status: playbackState?.status ?? 'idle',
       current_slot_id: playbackState?.currentSlot?.slot_id ?? null,
+      current_publication_id: playbackState?.currentPublication?.publication_id ?? null,
+      current_publication_title: playbackState?.currentPublication?.title ?? null,
+      current_publication_item_id: playbackState?.currentPublicationItem?.item_id ?? null,
+      current_publication_item_title: playbackState?.currentPublicationItem?.title ?? null,
       errors: playbackState?.errors ?? [],
       displays,
       selected_displays: this.config.selectedDisplayIds,
@@ -223,7 +288,7 @@ class HeartbeatService {
     }
 
     try {
-      const statusCode = await this.postJson(
+      const { statusCode, body } = await this.postJson<TelemetryResponse>(
         `${this.config.apiBaseUrl}/player/telemetry`,
         payload,
         HEARTBEAT_REQUEST_TIMEOUT_MS
@@ -243,7 +308,7 @@ class HeartbeatService {
       } else {
         throw new Error(`Telemetry failed: ${statusCode}`)
       }
-      await this.sendPreview()
+      await this.sendPreview(body?.screenshot_request ?? null)
     } catch (err) {
       // Silent fail — heartbeat errors are non-critical
       this.status.last_error = withErrorTimestamp(

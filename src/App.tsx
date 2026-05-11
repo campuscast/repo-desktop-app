@@ -156,22 +156,22 @@ function ControlApp() {
   }
 
   return (
-    <>
+    <div className="h-full w-full">
       {screen === 'boot' && <BootScreen />}
       {screen === 'setup' && (
-        <div key="setup" className="animate-screen-enter">
+        <div key="setup" className="h-full w-full animate-screen-enter">
           <SetupScreen />
         </div>
       )}
       {screen === 'activation' && (
-        <div key="activation" className="animate-screen-enter">
+        <div key="activation" className="h-full w-full animate-screen-enter">
           <ActivationScreen />
         </div>
       )}
       {(screen === 'diagnostics' ||
         screen === 'displays' ||
         screen === 'settings') && (
-        <div key="control" className="animate-screen-enter">
+        <div key="control" className="h-full w-full animate-screen-enter">
           <ControlShell />
         </div>
       )}
@@ -181,6 +181,6 @@ function ControlApp() {
           className: 'bg-card text-card-foreground border-border',
         }}
       />
-    </>
+    </div>
   )
 }

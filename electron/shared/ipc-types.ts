@@ -175,6 +175,7 @@ export interface PublicationSlidePayload {
   title?: string
   body?: string
   image_asset_id?: string
+  external_url?: string
   logo_asset_id?: string
   layout?: 'centered' | 'split' | 'title-top'
   image_fit?: 'cover' | 'contain' | 'stretch' | 'center'
@@ -269,6 +270,10 @@ export interface TelemetryPayload {
   current_release_id: string | null
   playback_status: string
   current_slot_id: string | null
+  current_publication_id?: string | null
+  current_publication_title?: string | null
+  current_publication_item_id?: string | null
+  current_publication_item_title?: string | null
   errors: string[]
   displays: DisplayInfo[]
   selected_displays: string[]
@@ -278,6 +283,29 @@ export interface TelemetryPayload {
   mqtt_status?: ConnectionStatus['mqtt']
   cache?: CacheStatus
   last_error?: string | null
+}
+
+export interface ScreenshotRequestCommand {
+  request_id: string
+  display_id: string
+  requested_at: string
+}
+
+export interface TelemetryResponse {
+  screenshot_request: ScreenshotRequestCommand | null
+}
+
+export interface PreviewUploadPayload {
+  image_base64?: string
+  image_url?: string
+  mime_type?: string
+  captured_at?: string
+  width?: number
+  height?: number
+  status?: string
+  display_id?: string | null
+  display_label?: string | null
+  request_id?: string | null
 }
 
 // ─── IPC Request / Response map ─────────────────────────────────────────────

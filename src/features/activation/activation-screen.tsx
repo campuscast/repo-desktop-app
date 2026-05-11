@@ -205,7 +205,7 @@ export function ActivationScreen() {
   const seconds = expiresIn % 60
 
   return (
-    <div className="flex h-screen w-screen flex-col items-center justify-center gap-8 bg-background p-8">
+    <div className="flex h-full w-full flex-col items-center justify-center gap-8 bg-background p-8">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Monitor className="h-8 w-8 text-primary" />

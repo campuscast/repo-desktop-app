@@ -40,6 +40,12 @@ export type ActivatedDeviceVerificationResult =
 
 /** Performs HTTP requests to CMS backend from the main process using Electron's net module */
 class BackendClient {
+  private withCacheBust(url: string): string {
+    const parsed = new URL(url)
+    parsed.searchParams.set('_ts', Date.now().toString())
+    return parsed.toString()
+  }
+
   /** POST /enrollment/request-code — unauthenticated */
   async requestActivationCode(
     apiBaseUrl: string,
@@ -103,7 +109,9 @@ class BackendClient {
     timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
   ): Promise<DeviceInfo> {
     return this.get<DeviceInfo>(
-      `${apiBaseUrl}/player/device-info?device_id=${encodeURIComponent(deviceId)}`,
+      this.withCacheBust(
+        `${apiBaseUrl}/player/device-info?device_id=${encodeURIComponent(deviceId)}`
+      ),
       deviceToken,
       timeoutMs
     )
@@ -112,7 +120,7 @@ class BackendClient {
   /**
    * Verifies active device session with authenticated /player/device-info.
    * - exists: authenticated device is still valid and info is returned
-   * - missing: token/device pair is no longer valid in CMS (401/403/404)
+   * - missing: token/device pair is no longer valid in CMS (401/403/404/410)
    * - unknown: transient/network/backend errors
    */
   async verifyActivatedDevice(
@@ -135,6 +143,7 @@ class BackendClient {
           err.statusCode === 401
           || err.statusCode === 403
           || err.statusCode === 404
+          || err.statusCode === 410
         ) {
           return { status: 'missing' }
         }
@@ -151,7 +160,9 @@ class BackendClient {
   ): Promise<Release | null> {
     try {
       return await this.get<Release>(
-        `${apiBaseUrl}/player/release?device_id=${encodeURIComponent(deviceId)}`,
+        this.withCacheBust(
+          `${apiBaseUrl}/player/release?device_id=${encodeURIComponent(deviceId)}`
+        ),
         deviceToken
       )
     } catch (err) {
@@ -170,7 +181,9 @@ class BackendClient {
     releaseId: string
   ): Promise<ReleaseManifest> {
     return this.get<ReleaseManifest>(
-      `${apiBaseUrl}/player/manifest/${encodeURIComponent(releaseId)}`,
+      this.withCacheBust(
+        `${apiBaseUrl}/player/manifest/${encodeURIComponent(releaseId)}`
+      ),
       deviceToken
     )
   }
@@ -199,6 +212,9 @@ class BackendClient {
       let settled = false
       const headers: Record<string, string> = {
         Accept: 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
       }
       if (token) headers.Authorization = `Bearer ${token}`
 

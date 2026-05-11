@@ -231,7 +231,7 @@ export function SetupScreen() {
   }
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-background p-8">
+    <div className="flex h-full w-full items-center justify-center bg-background p-8">
       {/* Language Switcher — top-right corner */}
       <div className="absolute right-4 top-4 flex items-center gap-2">
         <button

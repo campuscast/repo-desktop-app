@@ -18,16 +18,48 @@ import {
   resolveSlidePresentation,
 } from './custom-slide-rendering'
 
+const EMBEDDED_URL_PROTOCOLS = new Set(['http:', 'https:'])
+const EXTERNAL_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.bmp', '.ico']
+
+function normalizeEmbeddedSlideUrl(value?: string | null) {
+  const rawValue = (value ?? '').trim()
+  if (!rawValue) return ''
+
+  try {
+    const parsedUrl = new URL(rawValue)
+    return EMBEDDED_URL_PROTOCOLS.has(parsedUrl.protocol) ? parsedUrl.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+function resolveExternalSlideSource(value?: string | null) {
+  const normalizedUrl = normalizeEmbeddedSlideUrl(value)
+  if (!normalizedUrl) return null
+
+  const pathname = new URL(normalizedUrl).pathname.toLowerCase()
+  const kind = EXTERNAL_IMAGE_EXTENSIONS.some((extension) => pathname.endsWith(extension))
+    ? 'image'
+    : 'web'
+
+  return {
+    url: normalizedUrl,
+    kind,
+  } as const
+}
+
 interface PlaybackItemProps {
   asset?: ContentAsset | null
   metadata?: SlotMetadata
   publicationItem?: PublicationItem | null
+  transitionTypeOverride?: 'cut' | 'fade'
 }
 
 export function PlaybackItem({
   asset,
   metadata,
   publicationItem,
+  transitionTypeOverride,
 }: PlaybackItemProps) {
   const setAssetPath = usePlaybackStore((s) => s.setAssetPath)
   const getAssetPath = usePlaybackStore((s) => s.getAssetPath)
@@ -37,7 +69,10 @@ export function PlaybackItem({
   const videoRef = useRef<HTMLVideoElement>(null)
 
   const transitionType =
-    publicationItem?.transition?.type ?? metadata?.transition_type ?? 'cut'
+    transitionTypeOverride
+    ?? publicationItem?.transition?.type
+    ?? metadata?.transition_type
+    ?? 'cut'
   const fadeDuration =
     publicationItem?.transition?.duration_ms ?? metadata?.transition_duration_ms ?? 300
   const trimIn =
@@ -50,11 +85,21 @@ export function PlaybackItem({
   const assetId = asset?.asset_id ?? null
   const assetContentType = asset?.content_type ?? null
   const assetDownloadUrl = asset?.download_url ?? null
+  const externalSlideSource =
+    publicationItem?.type === 'custom_slide'
+      ? resolveExternalSlideSource(publicationItem.slide?.external_url)
+      : null
 
   useEffect(() => {
     let cancelled = false
 
     async function loadAsset() {
+      if (externalSlideSource) {
+        setLocalUrl(null)
+        setLoading(false)
+        return
+      }
+
       if (!assetId || !assetContentType || !assetDownloadUrl) {
         setLocalUrl(null)
         setLoading(false)
@@ -65,9 +110,19 @@ export function PlaybackItem({
 
       const cached = getAssetPath(assetId)
       if (cached) {
-        setLocalUrl(`file://${cached}`)
-        setLoading(false)
-        return
+        const persistedFromStore = await window.electronAPI.getCachedContentPath(
+          assetId,
+          assetContentType,
+          assetDownloadUrl
+        )
+        if (persistedFromStore) {
+          if (persistedFromStore !== cached) {
+            setAssetPath(assetId, persistedFromStore)
+          }
+          setLocalUrl(`file://${persistedFromStore}`)
+          setLoading(false)
+          return
+        }
       }
 
       const persistedCached = await window.electronAPI.getCachedContentPath(
@@ -105,7 +160,7 @@ export function PlaybackItem({
     return () => {
       cancelled = true
     }
-  }, [assetContentType, assetDownloadUrl, assetId, getAssetPath, setAssetPath])
+  }, [assetContentType, assetDownloadUrl, assetId, externalSlideSource, getAssetPath, setAssetPath])
 
   useEffect(() => {
     if (!loading) {
@@ -178,6 +233,8 @@ export function PlaybackItem({
 
   if (publicationItem?.type === 'custom_slide') {
     const model = resolveSlidePresentation(publicationItem.slide)
+    const externalSlideUrl = externalSlideSource?.url ?? ''
+    const showEmbeddedPage = externalSlideSource?.kind === 'web'
 
     return (
       <div
@@ -187,7 +244,20 @@ export function PlaybackItem({
           ...fadeStyle,
         }}
       >
-        {localUrl ? (
+        {showEmbeddedPage ? (
+          <webview
+            src={externalSlideUrl}
+            className="absolute inset-0 h-full w-full border-0 bg-white"
+            partition="persist:campuscast-playback"
+          />
+        ) : externalSlideSource?.kind === 'image' ? (
+          <img
+            src={externalSlideUrl}
+            alt={publicationItem.title || model.title || 'External image slide'}
+            className={getSlideImageClassName(model.imageFit)}
+            style={getSlideImageStyle(model.imageFit)}
+          />
+        ) : localUrl ? (
           <img
             src={localUrl}
             alt={asset?.filename || 'slide image'}
@@ -196,7 +266,7 @@ export function PlaybackItem({
           />
         ) : null}
 
-        {model.renderTextOverlay ? (
+        {!showEmbeddedPage && model.renderTextOverlay ? (
           <>
             <div className={getSlideScrimClassName(model.layout)} />
             <div className={getSlideTextLayerClassName(model.layout)}>

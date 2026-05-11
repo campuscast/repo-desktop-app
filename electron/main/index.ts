@@ -17,12 +17,12 @@ import { persistence } from './services/persistence'
 import { heartbeatService } from './services/heartbeat'
 import { mqttService } from './services/mqtt-client'
 import { backendClient } from './services/backend-client'
-import { contentCacheService } from './services/content-cache'
+import { runtimeScheduleSyncService } from './services/runtime-schedule-sync'
 import {
   getAutoLaunchSettings,
   isLaunchedViaAutoLaunch,
 } from './services/auto-launch'
-import type { AppConfig, DisplayInfo, ReleaseManifest } from '../shared/ipc-types'
+import type { AppConfig, DisplayInfo } from '../shared/ipc-types'
 import { IPC } from '../shared/ipc-channels'
 import {
   deriveDisplayBindings,
@@ -31,6 +31,7 @@ import {
 import { startupMark } from './startup-trace'
 import { withErrorTimestamp } from '../shared/error-log'
 import { initRuntimeLogging } from './services/runtime-log'
+import { hasMeaningfulDisplayTopologyChange } from './display-topology'
 
 const STARTUP_DEVICE_REVALIDATE_TIMEOUT_MS = 2500
 const PLAYBACK_RECOVERY_DELAY_MS = 1_500
@@ -46,16 +47,10 @@ if (!gotLock) {
   app.quit()
 }
 
-function isManifestUsable(manifest: ReleaseManifest | null): manifest is ReleaseManifest {
-  if (!manifest) return false
-  if (!manifest.release_id || !manifest.schedule_id || !manifest.zone_id) return false
-  if (!Array.isArray(manifest.slots) || !Array.isArray(manifest.assets)) return false
-  return true
-}
-
 let playbackRecoveryTimer: NodeJS.Timeout | null = null
 let playbackRecoveryInFlight = false
 let pendingPlaybackRecoveryReason: string | null = null
+let lastKnownDisplayTopology: DisplayInfo[] = []
 
 function restorePlaybackUsingSavedDisplays(
   config: AppConfig,
@@ -161,9 +156,21 @@ function schedulePlaybackRecovery(reason: string): void {
 }
 
 function handleDisplayTopologyChange(displays: DisplayInfo[]): void {
+  const meaningfulTopologyChange = hasMeaningfulDisplayTopologyChange(
+    lastKnownDisplayTopology,
+    displays
+  )
+  lastKnownDisplayTopology = displays
+
+  if (!meaningfulTopologyChange) {
+    console.info('[display-restore] Ignoring display metrics change without topology change')
+    return
+  }
+
   console.info(
     `[display-restore] Display topology changed (${displays.length} display(s))`
   )
+  heartbeatService.triggerNow()
   schedulePlaybackRecovery('display-topology-change')
 }
 
@@ -171,55 +178,7 @@ async function syncScheduleOnAutoLaunch(config: AppConfig): Promise<void> {
   if (!config.deviceToken || !config.deviceId) return
 
   try {
-    const release = await backendClient.fetchRelease(
-      config.apiBaseUrl,
-      config.deviceToken,
-      config.deviceId
-    )
-    if (!release) return
-
-    const manifest = await backendClient.fetchManifest(
-      config.apiBaseUrl,
-      config.deviceToken,
-      release.release_id
-    )
-    if (!isManifestUsable(manifest)) {
-      throw new Error('Manifest payload is invalid')
-    }
-
-    const prefetch = await contentCacheService.prefetchManifestAssets(
-      manifest,
-      config.deviceToken
-    )
-    const verified = contentCacheService.verifyManifestAssets(manifest)
-    const now = new Date().toISOString()
-
-    persistence.saveLastManifest(manifest)
-    persistence.saveConfig({ lastSyncAt: now })
-
-    let cleanupAt: string | null = persistence.getCacheStatus().last_cleanup_at
-    if (verified.missing === 0) {
-      contentCacheService.cleanupUnusedAssets(manifest)
-      cleanupAt = now
-    }
-
-    persistence.saveCacheStatus({
-      current_release_id: manifest.release_id,
-      total_assets: verified.total,
-      available_assets: verified.available,
-      missing_assets: verified.missing,
-      last_prefetch_at: now,
-      last_cleanup_at: cleanupAt,
-      last_error:
-        prefetch.failed[0]
-          ? withErrorTimestamp(prefetch.failed[0], new Date(now))
-          : (verified.missing > 0
-            ? withErrorTimestamp(
-              `Missing ${verified.missing}/${verified.total} assets`,
-              new Date(now)
-            )
-            : null),
-    })
+    await runtimeScheduleSyncService.syncLatestRelease('autostart-bootstrap')
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     persistence.saveCacheStatus({
@@ -365,6 +324,7 @@ app.whenReady().then(async () => {
 
   // Initialize display manager (monitors connected displays)
   initDisplayManager(controlWindow, handleDisplayTopologyChange)
+  lastKnownDisplayTopology = getDisplays()
   startupMark('main:display-manager-initialized')
 
   // Revalidate persisted activation after first window creation so
@@ -378,6 +338,7 @@ app.whenReady().then(async () => {
   if (config.activationState === 'activated' && config.deviceToken && config.deviceId) {
     mqttService.setBackendStatus('connecting', null)
     heartbeatService.start(config)
+    runtimeScheduleSyncService.start()
     startupMark('main:heartbeat-started')
 
     // Auto-reconnect MQTT on startup
@@ -472,6 +433,7 @@ app.on('second-instance', () => {
 
 // Quit when all windows are closed (except on macOS)
 app.on('window-all-closed', () => {
+  runtimeScheduleSyncService.stop()
   heartbeatService.stop()
   if (process.platform !== 'darwin') {
     app.quit()
@@ -483,6 +445,7 @@ app.on('before-quit', () => {
     clearTimeout(playbackRecoveryTimer)
     playbackRecoveryTimer = null
   }
+  runtimeScheduleSyncService.stop()
   heartbeatService.stop()
 })
 

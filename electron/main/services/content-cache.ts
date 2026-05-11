@@ -11,6 +11,7 @@ import { persistence } from './persistence.js'
 import type {
   CacheClearResult,
   CacheInfo,
+  ContentAsset,
   ReleaseManifest,
 } from '../../shared/ipc-types'
 
@@ -110,8 +111,8 @@ class ContentCacheService {
     })
   }
 
-  async prefetchManifestAssets(
-    manifest: ReleaseManifest,
+  async prefetchAssets(
+    assets: ContentAsset[],
     deviceToken: string
   ): Promise<{
     total: number
@@ -123,7 +124,7 @@ class ContentCacheService {
     let downloaded = 0
     const failed: string[] = []
 
-    for (const asset of manifest.assets) {
+    for (const asset of assets) {
       const localPath = this.resolveLocalPath(
         asset.asset_id,
         asset.download_url,
@@ -151,14 +152,26 @@ class ContentCacheService {
     }
 
     return {
-      total: manifest.assets.length,
+      total: assets.length,
       available,
       downloaded,
       failed,
     }
   }
 
-  verifyManifestAssets(manifest: ReleaseManifest): {
+  async prefetchManifestAssets(
+    manifest: ReleaseManifest,
+    deviceToken: string
+  ): Promise<{
+    total: number
+    available: number
+    downloaded: number
+    failed: string[]
+  }> {
+    return this.prefetchAssets(manifest.assets, deviceToken)
+  }
+
+  verifyAssets(assets: ContentAsset[]): {
     total: number
     available: number
     missing: number
@@ -167,7 +180,7 @@ class ContentCacheService {
     const missingAssetIds: string[] = []
     let available = 0
 
-    for (const asset of manifest.assets) {
+    for (const asset of assets) {
       const localPath = this.resolveLocalPath(
         asset.asset_id,
         asset.download_url,
@@ -181,16 +194,25 @@ class ContentCacheService {
     }
 
     return {
-      total: manifest.assets.length,
+      total: assets.length,
       available,
-      missing: manifest.assets.length - available,
+      missing: assets.length - available,
       missingAssetIds,
     }
   }
 
-  cleanupUnusedAssets(manifest: ReleaseManifest): number {
+  verifyManifestAssets(manifest: ReleaseManifest): {
+    total: number
+    available: number
+    missing: number
+    missingAssetIds: string[]
+  } {
+    return this.verifyAssets(manifest.assets)
+  }
+
+  cleanupUnusedAssetsForAssets(assets: ContentAsset[]): number {
     const keepFiles = new Set(
-      manifest.assets.map((asset) =>
+      assets.map((asset) =>
         basename(this.resolveLocalPath(
           asset.asset_id,
           asset.download_url,
@@ -217,6 +239,10 @@ class ContentCacheService {
     }
 
     return removed
+  }
+
+  cleanupUnusedAssets(manifest: ReleaseManifest): number {
+    return this.cleanupUnusedAssetsForAssets(manifest.assets)
   }
 
   /** Get the local file path for a cached asset (or null) */

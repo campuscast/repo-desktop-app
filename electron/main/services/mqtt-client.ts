@@ -12,6 +12,7 @@ import { withErrorTimestamp } from '../../shared/error-log'
 class MqttService {
   private client: MqttClient | null = null
   private config: MqttConfig | null = null
+  private releaseListeners = new Set<(notification: ReleaseNotification) => void>()
   private status: ConnectionStatus = {
     backend: 'disconnected',
     mqtt: 'disconnected',
@@ -91,6 +92,15 @@ class MqttService {
     this.updateStatus({ mqtt: 'disconnected' })
   }
 
+  onReleaseNotification(
+    listener: (notification: ReleaseNotification) => void
+  ): () => void {
+    this.releaseListeners.add(listener)
+    return () => {
+      this.releaseListeners.delete(listener)
+    }
+  }
+
   private subscribe(): void {
     if (!this.client || !this.config) return
 
@@ -118,6 +128,13 @@ class MqttService {
           published_at: data.published_at,
         }
         this.broadcastToAll(IPC.NEW_RELEASE, notification)
+        for (const listener of this.releaseListeners) {
+          try {
+            listener(notification)
+          } catch (err) {
+            console.warn('[mqtt] Release listener failed:', err)
+          }
+        }
       }
     } catch (err) {
       console.warn('[mqtt] Failed to parse message:', err)

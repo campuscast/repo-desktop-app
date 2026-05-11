@@ -17,6 +17,17 @@ describe('provisioning invalidation policy', () => {
     )
   })
 
+  it('treats 404 as fatal for runtime telemetry and heartbeat', () => {
+    assert.equal(
+      isProvisioningInvalidationStatus(404, 'telemetry'),
+      true
+    )
+    assert.equal(
+      isProvisioningInvalidationStatus(404, 'heartbeat'),
+      true
+    )
+  })
+
   it('does not treat release 404 as fatal deprovision', () => {
     assert.equal(
       isProvisioningInvalidationStatus(404, 'release'),
@@ -26,7 +37,7 @@ describe('provisioning invalidation policy', () => {
 
   it('treats auth invalidation statuses as fatal for telemetry', () => {
     const statuses = invalidationStatusesFor('telemetry')
-    assert.deepEqual(statuses, [401, 403, 410])
+    assert.deepEqual(statuses, [401, 403, 404, 410])
     assert.equal(
       isProvisioningInvalidationStatus(401, 'telemetry'),
       true

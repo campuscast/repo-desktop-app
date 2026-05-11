@@ -86,6 +86,11 @@ class PersistenceService {
     this.saveJson('last-manifest.json', manifest)
   }
 
+  clearLastManifest(): void {
+    this.lastManifest = null
+    this.saveJson('last-manifest.json', null)
+  }
+
   getCacheStatus(): CacheStatus {
     return { ...this.cacheStatus }
   }

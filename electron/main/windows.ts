@@ -256,6 +256,7 @@ export function createPlaybackWindow(display: DisplayInfo): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webviewTag: true,
     },
   })
 

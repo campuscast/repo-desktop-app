@@ -13,8 +13,9 @@ const INVALIDATION_STATUSES: Record<ProvisioningInvalidationContext, number[]> =
   // Release/manifest 404 may mean "no release yet", so do not deprovision on 404.
   release: [401, 403, 410],
   manifest: [401, 403, 410],
-  telemetry: [401, 403, 410],
-  heartbeat: [401, 403, 410],
+  // Runtime endpoints return 404 when the player was deleted or its assignment is no longer valid.
+  telemetry: [401, 403, 404, 410],
+  heartbeat: [401, 403, 404, 410],
 }
 
 export function invalidationStatusesFor(

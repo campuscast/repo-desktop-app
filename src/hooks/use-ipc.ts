@@ -141,23 +141,14 @@ export function useIpcEvents() {
     )
 
     cleanups.push(
-      window.electronAPI.onNewRelease(async (notification) => {
-        try {
-          const manifest = await window.electronAPI.fetchManifest(
-            notification.release_id
-          )
-          setManifest(manifest)
-        } catch (err) {
-          addError(
-            `Failed to fetch release ${notification.release_id}: ${err}`
-          )
-        }
-      })
-    )
-
-    cleanups.push(
       window.electronAPI.onPlaybackScheduleUpdate((manifest) => {
         setManifest(manifest)
+        void window.electronAPI.getConfig().then((cfg) => {
+          if (!mounted) return
+          setConfig(cfg)
+        }).catch(() => {
+          // Ignore best-effort config refresh failures.
+        })
       })
     )
 
